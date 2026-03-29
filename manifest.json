@@ -2,7 +2,7 @@
   "name": "Training Tracker",
   "short_name": "Training",
   "description": "Personal workout tracking app",
-  "start_url": "/",
+  "start_url": "/training-tracker/",
   "display": "standalone",
   "background_color": "#f1f5f9",
   "theme_color": "#6366f1",

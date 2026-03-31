@@ -3,18 +3,32 @@ import { supabase } from '../lib/supabase';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 
-type Mode = 'login' | 'signup';
+type Mode = 'login' | 'signup' | 'forgot';
 
 export function AuthPage() {
   const [mode,     setMode]     = useState<Mode>('login');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [error,    setError]    = useState('');
+  const [success,  setSuccess]  = useState('');
   const [loading,  setLoading]  = useState(false);
 
+  const reset = (next: Mode) => { setMode(next); setError(''); setSuccess(''); };
+
   const submit = async () => {
-    setError('');
+    setError(''); setSuccess('');
     setLoading(true);
+
+    if (mode === 'forgot') {
+      const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: 'https://timnase.github.io/training-tracker/',
+      });
+      if (e) setError(e.message);
+      else   setSuccess('Check your email for a reset link!');
+      setLoading(false);
+      return;
+    }
+
     const fn = mode === 'login'
       ? supabase.auth.signInWithPassword({ email, password })
       : supabase.auth.signUp({ email, password });
@@ -34,12 +48,13 @@ export function AuthPage() {
 
         <div className="bg-white rounded-2xl shadow-sm p-6 space-y-4">
           <h2 className="text-[17px] font-bold text-slate-900">
-            {mode === 'login' ? 'Welcome back' : 'Create your account'}
+            {mode === 'login'  ? 'Welcome back'       :
+             mode === 'signup' ? 'Create your account' :
+                                 'Reset password'}
           </h2>
 
-          {error && (
-            <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-lg">{error}</p>
-          )}
+          {error   && <p className="bg-red-50   text-red-500   text-sm px-3 py-2 rounded-lg">{error}</p>}
+          {success && <p className="bg-green-50 text-green-600 text-sm px-3 py-2 rounded-lg">{success}</p>}
 
           <Input
             label="Email"
@@ -49,26 +64,46 @@ export function AuthPage() {
             value={email}
             onChange={e => setEmail(e.target.value)}
           />
-          <Input
-            label="Password"
-            type="password"
-            placeholder="••••••••"
-            autoComplete="current-password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submit()}
-          />
+
+          {mode !== 'forgot' && (
+            <Input
+              label="Password"
+              type="password"
+              placeholder="••••••••"
+              autoComplete="current-password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submit()}
+            />
+          )}
+
+          {mode === 'login' && (
+            <button
+              onClick={() => reset('forgot')}
+              className="text-xs text-slate-400 hover:text-primary-500 font-medium -mt-2 text-right w-full"
+            >
+              Forgot password?
+            </button>
+          )}
 
           <Button fullWidth loading={loading} onClick={submit}>
-            {mode === 'login' ? 'Log In' : 'Sign Up'}
+            {mode === 'login'  ? 'Log In'           :
+             mode === 'signup' ? 'Sign Up'           :
+                                 'Send Reset Email'}
           </Button>
 
-          <button
-            onClick={() => { setMode(m => m === 'login' ? 'signup' : 'login'); setError(''); }}
-            className="w-full text-center text-sm text-primary-500 font-semibold"
-          >
-            {mode === 'login' ? "No account yet? Sign up" : "Already have an account? Log in"}
-          </button>
+          {mode === 'forgot' ? (
+            <button onClick={() => reset('login')} className="w-full text-center text-sm text-primary-500 font-semibold">
+              Back to login
+            </button>
+          ) : (
+            <button
+              onClick={() => reset(mode === 'login' ? 'signup' : 'login')}
+              className="w-full text-center text-sm text-primary-500 font-semibold"
+            >
+              {mode === 'login' ? "No account yet? Sign up" : "Already have an account? Log in"}
+            </button>
+          )}
         </div>
       </div>
     </div>

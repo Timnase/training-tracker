@@ -1,17 +1,32 @@
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { Spinner } from './components/ui/Spinner';
 import { BottomNav } from './components/layout/BottomNav';
+import { supabase } from './lib/supabase';
 
-import { AuthPage }        from './pages/AuthPage';
-import { DashboardPage }   from './pages/DashboardPage';
-import { PlansPage }       from './pages/PlansPage';
-import { PlanEditPage }    from './pages/PlanEditPage';
-import { WorkoutEditPage } from './pages/WorkoutEditPage';
-import { LogPage }         from './pages/LogPage';
-import { LogSessionPage }  from './pages/LogSessionPage';
-import { HistoryPage }     from './pages/HistoryPage';
-import { SettingsPage }    from './pages/SettingsPage';
+import { AuthPage }           from './pages/AuthPage';
+import { ResetPasswordPage }  from './pages/ResetPasswordPage';
+import { DashboardPage }      from './pages/DashboardPage';
+import { PlansPage }          from './pages/PlansPage';
+import { PlanEditPage }       from './pages/PlanEditPage';
+import { WorkoutEditPage }    from './pages/WorkoutEditPage';
+import { LogPage }            from './pages/LogPage';
+import { LogSessionPage }     from './pages/LogSessionPage';
+import { HistoryPage }        from './pages/HistoryPage';
+import { SettingsPage }       from './pages/SettingsPage';
+
+// Listens for Supabase PASSWORD_RECOVERY event and redirects to the reset page
+function PasswordRecoveryListener() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') navigate('/reset-password', { replace: true });
+    });
+    return () => subscription.unsubscribe();
+  }, [navigate]);
+  return null;
+}
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -42,9 +57,11 @@ export function App() {
 
   return (
     <HashRouter>
+      <PasswordRecoveryListener />
       <Routes>
         {/* Public */}
-        <Route path="/auth" element={user ? <Navigate to="/" replace /> : <AuthPage />} />
+        <Route path="/auth"           element={user ? <Navigate to="/" replace /> : <AuthPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
 
         {/* Protected */}
         <Route path="/*" element={

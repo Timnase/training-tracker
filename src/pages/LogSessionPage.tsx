@@ -1,0 +1,289 @@
+import { useNavigate } from 'react-router-dom';
+import { useActiveWorkout } from '../hooks/useActiveWorkout';
+import { useInsertWorkout } from '../hooks/useWorkouts';
+import { useWorkouts } from '../hooks/useWorkouts';
+import { Header } from '../components/layout/Header';
+import { Button } from '../components/ui/Button';
+import { Toggle } from '../components/ui/Toggle';
+import { Input, Textarea } from '../components/ui/Input';
+import { daysAgo } from '../utils';
+import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../types';
+
+// ─── Feeling selector ─────────────────────────────────────────────────────────
+
+const FEELINGS: { value: Feeling; emoji: string; label: string }[] = [
+  { value: 'tired',     emoji: '😴', label: 'Tired'     },
+  { value: 'normal',    emoji: '😐', label: 'Normal'    },
+  { value: 'energized', emoji: '⚡', label: 'Energized' },
+];
+
+function FeelingSelector({ value, onChange }: { value: Feeling | null; onChange: (f: Feeling) => void }) {
+  return (
+    <div className="flex gap-2">
+      {FEELINGS.map(f => (
+        <button
+          key={f.value}
+          onClick={() => onChange(f.value)}
+          className={`flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl border-2 text-xs font-semibold transition-all
+            ${value === f.value
+              ? f.value === 'tired'     ? 'border-violet-400 bg-violet-50 text-violet-600'
+              : f.value === 'normal'    ? 'border-blue-400 bg-blue-50 text-blue-600'
+              :                           'border-amber-400 bg-amber-50 text-amber-600'
+              : 'border-slate-200 text-slate-400'
+            }`}
+        >
+          <span className="text-2xl">{f.emoji}</span>
+          {f.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Difficulty buttons ───────────────────────────────────────────────────────
+
+const DIFF_CONFIG: { value: Difficulty; label: string; classes: string }[] = [
+  { value: 'easy',     label: 'E', classes: 'active:bg-easy-light    active:text-easy    active:border-easy'     },
+  { value: 'moderate', label: 'M', classes: 'active:bg-moderate-light active:text-moderate active:border-moderate' },
+  { value: 'hard',     label: 'H', classes: 'active:bg-hard-light    active:text-hard    active:border-hard'     },
+];
+
+const DIFF_ACTIVE: Record<Difficulty, string> = {
+  easy:     'bg-easy-light text-easy border-easy',
+  moderate: 'bg-moderate-light text-moderate border-moderate',
+  hard:     'bg-hard-light text-hard border-hard',
+};
+
+function DiffButton({ value, current, onChange }: { value: Difficulty; current: Difficulty | null; onChange: (d: Difficulty) => void }) {
+  const config = DIFF_CONFIG.find(d => d.value === value)!;
+  const isActive = current === value;
+  return (
+    <button
+      onClick={() => onChange(value)}
+      className={`flex-1 py-1.5 text-xs font-bold rounded-lg border-2 transition-all
+        ${isActive ? DIFF_ACTIVE[value] : `border-slate-200 text-slate-300 ${config.classes}`}`}
+    >
+      {config.label}
+    </button>
+  );
+}
+
+// ─── Set row ──────────────────────────────────────────────────────────────────
+
+interface SetRowProps {
+  index:    number;
+  set:      SetLog;
+  lastSet:  SetLog | null;
+  onUpdate: (patch: Partial<SetLog>) => void;
+  onRemove: () => void;
+}
+
+function SetRow({ index, set, lastSet, onUpdate, onRemove }: SetRowProps) {
+  return (
+    <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1.5 items-center mb-2">
+      <span className="text-xs font-bold text-slate-400 text-center">{index + 1}</span>
+
+      <input
+        type="number" inputMode="decimal"
+        placeholder={lastSet?.weight != null ? String(lastSet.weight) : '—'}
+        value={set.weight ?? ''}
+        onChange={e => onUpdate({ weight: e.target.value === '' ? null : parseFloat(e.target.value) })}
+        className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm font-semibold text-center bg-white focus:outline-none focus:border-primary-500"
+      />
+      <input
+        type="number" inputMode="numeric"
+        placeholder={lastSet?.reps != null ? String(lastSet.reps) : '—'}
+        value={set.reps ?? ''}
+        onChange={e => onUpdate({ reps: e.target.value === '' ? null : parseInt(e.target.value) })}
+        className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm font-semibold text-center bg-white focus:outline-none focus:border-primary-500"
+      />
+
+      <div className="flex gap-1">
+        {(['easy','moderate','hard'] as Difficulty[]).map(d => (
+          <DiffButton key={d} value={d} current={set.difficulty} onChange={diff => onUpdate({ difficulty: diff })} />
+        ))}
+      </div>
+
+      <button onClick={onRemove} className="text-slate-300 hover:text-red-400 flex items-center justify-center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-4 h-4">
+          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+// ─── Exercise block ───────────────────────────────────────────────────────────
+
+interface ExerciseBlockProps {
+  exercise:    Exercise;
+  log:         ExerciseLog;
+  allWorkouts: { exercises: ExerciseLog[]; date: string }[];
+  onUpdateSet: (setIdx: number, patch: Partial<SetLog>) => void;
+  onAddSet:    () => void;
+  onRemoveSet: (setIdx: number) => void;
+  onNoteChange:(note: string) => void;
+}
+
+function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange }: ExerciseBlockProps) {
+  const lastWo = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
+  const lastLog = lastWo?.exercises.find(e => e.exerciseId === exercise.id) ?? null;
+
+  const lastPerfText = lastLog?.sets.length
+    ? lastLog.sets.map((s, i) => `S${i + 1}: ${s.weight ? s.weight + 'kg × ' : ''}${s.reps ?? '?'}${s.difficulty ? ` (${s.difficulty})` : ''}`).join(' · ')
+    : 'First time — go for it!';
+
+  return (
+    <div className="py-3 px-4">
+      <p className="font-bold text-slate-900">{exercise.name}</p>
+      <p className="text-xs text-slate-400 mt-0.5 mb-3">
+        {lastWo ? `📅 ${daysAgo(lastWo.date)} · ` : ''}{lastPerfText}
+      </p>
+
+      {/* Column labels */}
+      <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1.5 mb-1">
+        {['', 'kg', 'reps', 'feel', ''].map((l, i) => (
+          <span key={i} className="text-[10px] font-bold uppercase text-slate-400 text-center">{l}</span>
+        ))}
+      </div>
+
+      {log.sets.map((set, i) => (
+        <SetRow
+          key={i}
+          index={i}
+          set={set}
+          lastSet={lastLog?.sets[i] ?? null}
+          onUpdate={patch => onUpdateSet(i, patch)}
+          onRemove={() => onRemoveSet(i)}
+        />
+      ))}
+
+      <Button variant="ghost" size="sm" fullWidth onClick={onAddSet} className="mt-1">
+        + Add Set
+      </Button>
+      <Input
+        className="mt-3 text-sm py-2"
+        placeholder="Notes for next time..."
+        value={log.note}
+        onChange={e => onNoteChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export function LogSessionPage() {
+  const navigate      = useNavigate();
+  const insertWorkout = useInsertWorkout();
+  const { data: allWorkouts = [] } = useWorkouts();
+  const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
+
+  if (!workout) {
+    navigate('/log', { replace: true });
+    return null;
+  }
+
+  // We need the plan's exercise objects for grouping — reconstruct from the log
+  const exercisesForGrouping: Exercise[] = workout.exercises.map(e => ({
+    id:             e.exerciseId,
+    name:           e.exerciseName,
+    defaultSets:    e.sets.length,
+    defaultReps:    '',
+    supersetGroupId: null, // grouping not critical here; just show individually
+  }));
+
+  const finish = async () => {
+    const hasData = workout.exercises.some(e => e.sets.some(s => s.weight || s.reps));
+    if (!hasData && !confirm('No sets logged yet. Save anyway?')) return;
+    await insertWorkout.mutateAsync({ ...workout, date: new Date().toISOString() });
+    setWorkout(null);
+    navigate('/', { replace: true });
+  };
+
+  const discard = () => {
+    if (!confirm('Discard this workout?')) return;
+    setWorkout(null);
+    navigate('/log', { replace: true });
+  };
+
+  return (
+    <>
+      <Header title={workout.workoutTemplateName} showBack />
+
+      <div className="p-4 space-y-5 pb-8">
+        <div>
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
+        </div>
+
+        {/* Feeling */}
+        <section>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">How do you feel?</p>
+          <FeelingSelector value={workout.feeling} onChange={setFeeling} />
+        </section>
+
+        {/* Cardio */}
+        <section>
+          <Toggle
+            label="Include cardio warmup"
+            checked={workout.cardio !== null}
+            onChange={checked => setCardio(checked ? { type: '', duration: null } : null)}
+          />
+          {workout.cardio !== null && (
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <Input
+                label="Type"
+                placeholder="Stairs, Treadmill..."
+                value={workout.cardio.type}
+                onChange={e => setCardio({ ...workout.cardio!, type: e.target.value })}
+              />
+              <Input
+                label="Duration (min)"
+                type="number"
+                placeholder="20"
+                value={workout.cardio.duration ?? ''}
+                onChange={e => setCardio({ ...workout.cardio!, duration: e.target.value ? parseInt(e.target.value) : null })}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* Exercises */}
+        <section>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">Exercises</p>
+          <div className="space-y-3">
+            {workout.exercises.map(log => (
+              <div key={log.exerciseId} className="bg-white rounded-2xl shadow-sm">
+                <ExerciseBlock
+                  exercise={exercisesForGrouping.find(e => e.id === log.exerciseId)!}
+                  log={log}
+                  allWorkouts={allWorkouts}
+                  onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
+                  onAddSet={() => addSet(log.exerciseId)}
+                  onRemoveSet={i => removeSet(log.exerciseId, i)}
+                  onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Workout notes */}
+        <Textarea
+          label="Workout Notes"
+          placeholder="General notes about today's session..."
+          rows={2}
+          value={workout.notes}
+          onChange={e => setNotes(e.target.value)}
+        />
+
+        <Button fullWidth size="lg" loading={insertWorkout.isPending} onClick={finish}>
+          ✓ Finish Workout
+        </Button>
+        <Button fullWidth variant="ghost" size="sm" onClick={discard}>
+          Discard Workout
+        </Button>
+      </div>
+    </>
+  );
+}

@@ -6,11 +6,9 @@ import { supabase } from './lib/supabase';
 import './index.css';
 
 async function init() {
-  // Supabase password recovery emails redirect here with the token in the URL hash
-  // e.g. #access_token=...&type=recovery
-  // HashRouter also uses # for routing — they conflict, so we intercept early.
-  // We wait for Supabase to fully process & store the session FIRST, then
-  // replace the URL with a clean HashRouter route.
+  // Supabase recovery emails redirect with #access_token=...&type=recovery
+  // which conflicts with HashRouter. Wait for Supabase to store the session,
+  // then swap the hash to the reset-password route and mount the app.
   if (window.location.hash.includes('type=recovery')) {
     await new Promise<void>((resolve) => {
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
@@ -21,10 +19,11 @@ async function init() {
       });
       setTimeout(resolve, 5000); // safety fallback
     });
-    window.location.replace(window.location.pathname + '#/reset-password');
-    return; // page will reload with the clean URL
+    // Replace the hash so HashRouter sees /reset-password (no page reload)
+    window.location.hash = '#/reset-password';
   }
 
+  // Always mount the app (whether we redirected or not)
   mountApp();
 }
 

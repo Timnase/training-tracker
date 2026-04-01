@@ -62,7 +62,11 @@ export function SettingsPage() {
     e.target.value = '';
   };
 
-  const handleLogout = () => supabase.auth.signOut();
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    // Replace entire history so back button can't return to a logged-in page
+    window.location.replace(window.location.pathname + '#/auth');
+  };
 
   return (
     <>

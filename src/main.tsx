@@ -2,21 +2,29 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
+import { supabase } from './lib/supabase';
 import './index.css';
 
-// Supabase appends #access_token=...&type=recovery to the redirectTo URL.
-// HashRouter also uses # for routing — they conflict.
-// Fix: import the supabase client first (it processes & stores the token from
-// window.location.hash into localStorage), then replace the URL with a clean
-// HashRouter-compatible route before React mounts.
-import { supabase as _supabase } from './lib/supabase'; // initialises client, stores session
-void _supabase; // suppress unused warning
+async function init() {
+  // Supabase password recovery emails redirect here with the token in the URL hash
+  // e.g. #access_token=...&type=recovery
+  // HashRouter also uses # for routing — they conflict, so we intercept early.
+  // We wait for Supabase to fully process & store the session FIRST, then
+  // replace the URL with a clean HashRouter route.
+  if (window.location.hash.includes('type=recovery')) {
+    await new Promise<void>((resolve) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+      setTimeout(resolve, 5000); // safety fallback
+    });
+    window.location.replace(window.location.pathname + '#/reset-password');
+    return; // page will reload with the clean URL
+  }
 
-if (window.location.hash.includes('type=recovery')) {
-  window.location.replace(
-    window.location.pathname + window.location.search + '#/reset-password'
-  );
-} else {
   mountApp();
 }
 
@@ -24,8 +32,8 @@ function mountApp() {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime:           1000 * 60 * 5,
-        retry:               1,
+        staleTime:            1000 * 60 * 5,
+        retry:                1,
         refetchOnWindowFocus: false,
       },
     },
@@ -39,3 +47,5 @@ function mountApp() {
     </StrictMode>,
   );
 }
+
+init();

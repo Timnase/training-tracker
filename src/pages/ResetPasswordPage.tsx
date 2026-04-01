@@ -16,6 +16,12 @@ export function ResetPasswordPage() {
     if (password.length < 6)        { setError('Password must be at least 6 characters.'); return; }
     if (password !== confirm)        { setError('Passwords do not match.');                return; }
     setLoading(true);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      setError('Session expired — please request a new reset email.');
+      setLoading(false);
+      return;
+    }
     const { error: e } = await supabase.auth.updateUser({ password });
     if (e) { setError(e.message); setLoading(false); return; }
     navigate('/', { replace: true });

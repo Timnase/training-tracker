@@ -21,7 +21,7 @@ export function AuthPage() {
 
     if (mode === 'forgot') {
       const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: 'https://timnase.github.io/training-tracker/',
+        redirectTo: 'https://timnase.github.io/training-tracker/?recovery=1',
       });
       if (e) setError(e.message);
       else   setSuccess('Check your email for a reset link!');

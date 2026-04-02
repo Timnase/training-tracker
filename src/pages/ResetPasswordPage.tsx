@@ -1,27 +1,38 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { Spinner } from '../components/ui/Spinner';
 
 export function ResetPasswordPage() {
-  const navigate             = useNavigate();
+  const navigate = useNavigate();
+  const [ready,    setReady]    = useState(false);
   const [password, setPassword] = useState('');
   const [confirm,  setConfirm]  = useState('');
   const [error,    setError]    = useState('');
   const [loading,  setLoading]  = useState(false);
 
+  // Wait for PKCE code exchange to complete and session to be available
+  useEffect(() => {
+    const check = async () => {
+      // Poll until session is ready (PKCE exchange happens async)
+      for (let i = 0; i < 20; i++) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) { setReady(true); return; }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      setError('Link expired or already used. Please request a new reset email.');
+      setReady(true);
+    };
+    check();
+  }, []);
+
   const submit = async () => {
     setError('');
-    if (password.length < 6)        { setError('Password must be at least 6 characters.'); return; }
-    if (password !== confirm)        { setError('Passwords do not match.');                return; }
+    if (password.length < 6)  { setError('Password must be at least 6 characters.'); return; }
+    if (password !== confirm)  { setError('Passwords do not match.');                return; }
     setLoading(true);
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      setError('Session expired — please request a new reset email.');
-      setLoading(false);
-      return;
-    }
     const { error: e } = await supabase.auth.updateUser({ password });
     if (e) { setError(e.message); setLoading(false); return; }
     navigate('/', { replace: true });
@@ -37,29 +48,33 @@ export function ResetPasswordPage() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm p-6 space-y-4">
-          {error && <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-lg">{error}</p>}
-
-          <Input
-            label="New Password"
-            type="password"
-            placeholder="••••••••"
-            autoComplete="new-password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-          />
-          <Input
-            label="Confirm Password"
-            type="password"
-            placeholder="••••••••"
-            autoComplete="new-password"
-            value={confirm}
-            onChange={e => setConfirm(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submit()}
-          />
-
-          <Button fullWidth loading={loading} onClick={submit}>
-            Set New Password
-          </Button>
+          {!ready ? (
+            <div className="flex justify-center py-4"><Spinner /></div>
+          ) : (
+            <>
+              {error && <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-lg">{error}</p>}
+              <Input
+                label="New Password"
+                type="password"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+              <Input
+                label="Confirm Password"
+                type="password"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submit()}
+              />
+              <Button fullWidth loading={loading} onClick={submit}>
+                Set New Password
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </div>

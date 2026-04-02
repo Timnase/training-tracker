@@ -20,6 +20,14 @@ import { SettingsPage }       from './pages/SettingsPage';
 function PasswordRecoveryListener() {
   const navigate = useNavigate();
   useEffect(() => {
+    // PKCE recovery: Supabase redirects to ?recovery=1&code=XXX
+    // Check the param immediately — no event timing race condition
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('recovery') === '1') {
+      navigate('/reset-password', { replace: true });
+      return;
+    }
+    // Fallback for any other recovery flow
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') navigate('/reset-password', { replace: true });
     });

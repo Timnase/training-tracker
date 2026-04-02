@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Spinner } from '../components/ui/Spinner';
 
 export function ResetPasswordPage() {
-  const navigate = useNavigate();
   const [ready,    setReady]    = useState(false);
   const [password, setPassword] = useState('');
   const [confirm,  setConfirm]  = useState('');
@@ -35,7 +33,8 @@ export function ResetPasswordPage() {
     setLoading(true);
     const { error: e } = await supabase.auth.updateUser({ password });
     if (e) { setError(e.message); setLoading(false); return; }
-    navigate('/', { replace: true });
+    // Full reload to clear ?recovery=1 from URL and start fresh as logged-in user
+    window.location.replace(window.location.pathname + '#/');
   };
 
   return (

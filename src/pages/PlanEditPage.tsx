@@ -20,6 +20,7 @@ export function PlanEditPage() {
   const { data: activePlanId } = useActivePlanId();
 
   const [editName,   setEditName]   = useState('');
+  const [nameSaved,  setNameSaved]  = useState(false);
   const [showModal,  setShowModal]  = useState(false);
   const [newWtName,  setNewWtName]  = useState('');
 
@@ -28,17 +29,19 @@ export function PlanEditPage() {
   const saveName = async () => {
     if (!editName.trim() || editName.trim() === plan.name) return;
     await upsertPlan.mutateAsync({ ...plan, name: editName.trim() });
+    setNameSaved(true);
+    setTimeout(() => setNameSaved(false), 2000);
   };
 
+  // Feature 4: after creating workout, go straight to the exercise builder
   const addWorkout = async () => {
     if (!newWtName.trim()) return;
-    const updated: Plan = {
-      ...plan,
-      workouts: [...plan.workouts, { id: uid(), name: newWtName.trim(), exercises: [] }],
-    };
+    const newWt = { id: uid(), name: newWtName.trim(), exercises: [] };
+    const updated: Plan = { ...plan, workouts: [...plan.workouts, newWt] };
     await upsertPlan.mutateAsync(updated);
     setShowModal(false);
     setNewWtName('');
+    navigate(`/plans/${plan.id}/workouts/${newWt.id}`);
   };
 
   const removeWorkout = async (workoutId: string) => {
@@ -71,10 +74,17 @@ export function PlanEditPage() {
             <Input
               className="flex-1"
               defaultValue={plan.name}
-              onChange={e => setEditName(e.target.value)}
-              onBlur={saveName}
+              onChange={e => { setEditName(e.target.value); setNameSaved(false); }}
               onKeyDown={e => e.key === 'Enter' && saveName()}
             />
+            <Button
+              size="sm"
+              variant={nameSaved ? 'outline' : 'primary'}
+              loading={upsertPlan.isPending}
+              onClick={saveName}
+            >
+              {nameSaved ? '✓ Saved' : 'Save'}
+            </Button>
           </div>
         </div>
 
@@ -133,7 +143,7 @@ export function PlanEditPage() {
               onKeyDown={e => e.key === 'Enter' && addWorkout()}
             />
             <Button fullWidth loading={upsertPlan.isPending} onClick={addWorkout}>
-              Add Workout
+              Add Workout &amp; Build Exercises →
             </Button>
           </div>
         </Modal>

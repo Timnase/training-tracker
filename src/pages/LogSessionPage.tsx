@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useActiveWorkout } from '../hooks/useActiveWorkout';
 import { useInsertWorkout } from '../hooks/useWorkouts';
@@ -8,6 +9,96 @@ import { Toggle } from '../components/ui/Toggle';
 import { Input, Textarea } from '../components/ui/Input';
 import { daysAgo } from '../utils';
 import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../types';
+
+// ─── Elapsed workout timer ────────────────────────────────────────────────────
+
+function useElapsedTime(startedAt: string | null | undefined): string {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!startedAt) return;
+    const tick = () => setElapsed(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ─── Rest timer ───────────────────────────────────────────────────────────────
+
+const REST_DEFAULT = 90;
+
+function RestTimer() {
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const start = (secs = REST_DEFAULT) => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setRemaining(secs);
+    intervalRef.current = setInterval(() => {
+      setRemaining(r => {
+        if (r === null || r <= 1) {
+          clearInterval(intervalRef.current!);
+          return null;
+        }
+        return r - 1;
+      });
+    }, 1000);
+  };
+
+  const stop = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setRemaining(null);
+  };
+
+  useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
+
+  if (remaining === null) {
+    return (
+      <button
+        onClick={() => start()}
+        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-slate-200 text-slate-400 hover:border-primary-300 hover:text-primary-500 text-sm font-semibold transition-all"
+      >
+        ⏱ Start rest timer (90s)
+      </button>
+    );
+  }
+
+  const pct = (remaining / REST_DEFAULT) * 100;
+  const urgent = remaining <= 10;
+  return (
+    <div className={`rounded-xl p-3 flex items-center gap-3 ${urgent ? 'bg-red-50' : 'bg-primary-50'}`}>
+      <div className="relative w-10 h-10 flex-shrink-0">
+        <svg className="w-10 h-10 -rotate-90" viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
+          <circle
+            cx="18" cy="18" r="15" fill="none"
+            stroke={urgent ? '#ef4444' : '#6366f1'}
+            strokeWidth="3"
+            strokeDasharray={`${2 * Math.PI * 15}`}
+            strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
+            strokeLinecap="round"
+          />
+        </svg>
+        <span className={`absolute inset-0 flex items-center justify-center text-[11px] font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
+          {remaining}
+        </span>
+      </div>
+      <div className="flex-1">
+        <p className={`text-sm font-bold ${urgent ? 'text-red-500' : 'text-primary-700'}`}>
+          {urgent ? 'Almost done!' : 'Resting…'}
+        </p>
+        <p className="text-xs text-slate-400">{remaining}s remaining</p>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={() => start()} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
+        <button onClick={stop} className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
+      </div>
+    </div>
+  );
+}
 
 // ─── Feeling selector ─────────────────────────────────────────────────────────
 
@@ -178,6 +269,7 @@ export function LogSessionPage() {
   const insertWorkout = useInsertWorkout();
   const { data: allWorkouts = [] } = useWorkouts();
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
+  const elapsed = useElapsedTime(workout?.startedAt);
 
   if (!workout) {
     navigate('/log', { replace: true });
@@ -212,9 +304,14 @@ export function LogSessionPage() {
       <Header title={workout.workoutTemplateName} showBack />
 
       <div className="p-4 space-y-5 pb-8">
-        <div>
+        {/* Plan name + elapsed timer */}
+        <div className="flex items-center justify-between">
           <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
+          <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
         </div>
+
+        {/* Rest timer */}
+        <RestTimer />
 
         {/* Feeling */}
         <section>

@@ -62,6 +62,7 @@ export function LogPage() {
       workoutTemplateId:   wt.id,
       workoutTemplateName: wt.name,
       date:                new Date().toISOString(),
+      startedAt:           new Date().toISOString(),
       feeling:             null,
       cardio:              null,
       notes:               '',

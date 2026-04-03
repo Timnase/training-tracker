@@ -50,6 +50,7 @@ export interface WorkoutLog {
   workoutTemplateId:    string;
   workoutTemplateName:  string;
   date:                 string;
+  startedAt:            string | null;   // ISO timestamp when workout began
   feeling:              Feeling | null;
   cardio:               Cardio | null;
   exercises:            ExerciseLog[];

@@ -9,6 +9,7 @@ function rowToLog(row: WorkoutRow): WorkoutLog {
     workoutTemplateId:    row.workout_template_id ?? '',
     workoutTemplateName:  row.workout_template_name ?? '',
     date:                 row.date,
+    startedAt:            null,
     feeling:              row.feeling,
     cardio:               row.cardio,
     exercises:            row.exercises,

@@ -13,14 +13,14 @@ interface ExerciseFormState {
   name:         string;
   defaultSets:  string;
   defaultReps:  string;
-  supersetWith: string;
+  supersetWith: string; // exercise id to group with, or ''
 }
 
 const DEFAULT_FORM: ExerciseFormState = { name: '', defaultSets: '3', defaultReps: '8-12', supersetWith: '' };
 
 export function WorkoutEditPage() {
   const { planId, workoutId } = useParams<{ planId: string; workoutId: string }>();
-const plan                  = usePlan(planId!);
+  const plan                  = usePlan(planId!);
   const upsertPlan            = useUpsertPlan();
 
   const [showModal, setShowModal] = useState(false);
@@ -55,20 +55,48 @@ const plan                  = usePlan(planId!);
     const base = { name: form.name.trim(), defaultSets: parseInt(form.defaultSets) || 3, defaultReps: form.defaultReps || '8-12' };
 
     if (editingId) {
+      // Editing existing — just update name/sets/reps (superset managed separately)
       updatePlan(exercises.map(ex => ex.id === editingId ? { ...ex, ...base } : ex));
     } else {
+      // Adding new exercise
       let supersetGroupId: string | null = null;
       if (form.supersetWith) {
         const partner = exercises.find(e => e.id === form.supersetWith)!;
+        // Join partner's existing superset group or create a new one
         supersetGroupId = partner.supersetGroupId ?? uid();
-        const withUpdated = exercises.map(e => e.id === partner.id ? { ...e, supersetGroupId } : e);
-        updatePlan([...withUpdated, { id: uid(), ...base, supersetGroupId }]);
+        const updated = exercises.map(e =>
+          e.id === partner.id && !e.supersetGroupId ? { ...e, supersetGroupId } : e
+        );
+        updatePlan([...updated, { id: uid(), ...base, supersetGroupId }]);
         setShowModal(false); setForm(DEFAULT_FORM);
         return;
       }
       updatePlan([...exercises, { id: uid(), ...base, supersetGroupId }]);
     }
     setShowModal(false); setForm(DEFAULT_FORM);
+  };
+
+  // Feature 5 & 6: join this exercise to a superset with another exercise
+  const joinSuperset = (exId: string, partnerId: string) => {
+    const partner = exercises.find(e => e.id === partnerId)!;
+    const groupId = partner.supersetGroupId ?? uid();
+    updatePlan(exercises.map(e => {
+      if (e.id === exId)      return { ...e, supersetGroupId: groupId };
+      if (e.id === partnerId) return { ...e, supersetGroupId: groupId };
+      return e;
+    }));
+  };
+
+  // Feature 5: remove exercise from its superset
+  const leaveSuperset = (exId: string) => {
+    const target = exercises.find(e => e.id === exId)!;
+    let updated = exercises.map(e => e.id === exId ? { ...e, supersetGroupId: null } : e);
+    // If only 1 member left in the group, dissolve the group entirely
+    const remaining = updated.filter(e => e.supersetGroupId === target.supersetGroupId);
+    if (remaining.length === 1) {
+      updated = updated.map(e => e.supersetGroupId === target.supersetGroupId ? { ...e, supersetGroupId: null } : e);
+    }
+    updatePlan(updated);
   };
 
   const deleteExercise = (exId: string) => {
@@ -83,7 +111,18 @@ const plan                  = usePlan(planId!);
     setShowModal(false);
   };
 
-  const standaloneExercises = exercises.filter(e => !e.supersetGroupId);
+  // Exercises available to superset-with (all except the one being added/edited)
+  const supersetCandidates = editingId
+    ? exercises.filter(e => e.id !== editingId)
+    : exercises;
+
+  const editingExercise = editingId ? exercises.find(e => e.id === editingId) : null;
+  const supersetMembers = editingExercise?.supersetGroupId
+    ? exercises.filter(e => e.supersetGroupId === editingExercise.supersetGroupId && e.id !== editingId)
+    : [];
+  const candidatesNotInMySuperset = editingExercise?.supersetGroupId
+    ? exercises.filter(e => e.supersetGroupId !== editingExercise.supersetGroupId && e.id !== editingId)
+    : exercises.filter(e => e.id !== editingId);
 
   return (
     <>
@@ -107,7 +146,7 @@ const plan                  = usePlan(planId!);
               group.type === 'superset' ? (
                 <div key={i} className="border-2 border-primary-500 rounded-2xl overflow-hidden">
                   <div className="bg-primary-50 px-4 py-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-primary-500">⚡ Superset</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-primary-500">⚡ Superset ({group.exercises.length} exercises)</span>
                   </div>
                   {group.exercises.map(ex => (
                     <ExerciseRow key={ex.id} exercise={ex} onEdit={openEdit} onDelete={deleteExercise} />
@@ -135,20 +174,64 @@ const plan                  = usePlan(planId!);
               <Input label="Default Sets" type="number" min="1" value={form.defaultSets} onChange={e => setForm(f => ({ ...f, defaultSets: e.target.value }))} />
               <Input label="Default Reps" placeholder="8-12" value={form.defaultReps} onChange={e => setForm(f => ({ ...f, defaultReps: e.target.value }))} />
             </div>
-            {!editingId && standaloneExercises.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold text-slate-500">Superset with (optional)</label>
-                <select
-                  className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-[15px] bg-white focus:outline-none focus:border-primary-500"
-                  value={form.supersetWith}
-                  onChange={e => setForm(f => ({ ...f, supersetWith: e.target.value }))}
-                >
-                  <option value="">None – standalone</option>
-                  {standaloneExercises.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
+
+            {/* ── Superset section ── */}
+            {editingId ? (
+              // Editing existing exercise: show superset management
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-500">Superset</label>
+                {supersetMembers.length > 0 ? (
+                  <div className="bg-primary-50 rounded-xl p-3 space-y-2">
+                    <p className="text-xs text-primary-600 font-semibold">⚡ In superset with:</p>
+                    {supersetMembers.map(m => (
+                      <p key={m.id} className="text-sm text-slate-700">· {m.name}</p>
+                    ))}
+                    {candidatesNotInMySuperset.length > 0 && (
+                      <select
+                        className="w-full mt-1 px-3 py-2 border border-primary-200 rounded-xl text-sm bg-white"
+                        defaultValue=""
+                        onChange={e => { if (e.target.value) joinSuperset(editingId, e.target.value); }}
+                      >
+                        <option value="">+ Add exercise to this superset…</option>
+                        {candidatesNotInMySuperset.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                      </select>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={() => leaveSuperset(editingId)}>
+                      Remove from superset
+                    </Button>
+                  </div>
+                ) : (
+                  supersetCandidates.length > 0 && (
+                    <select
+                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-[15px] bg-white focus:outline-none focus:border-primary-500"
+                      defaultValue=""
+                      onChange={e => { if (e.target.value) joinSuperset(editingId, e.target.value); }}
+                    >
+                      <option value="">None – standalone</option>
+                      {supersetCandidates.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  )
+                )}
               </div>
+            ) : (
+              // Adding new exercise: select superset partner
+              supersetCandidates.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-500">Superset with (optional)</label>
+                  <select
+                    className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-[15px] bg-white focus:outline-none focus:border-primary-500"
+                    value={form.supersetWith}
+                    onChange={e => setForm(f => ({ ...f, supersetWith: e.target.value }))}
+                  >
+                    <option value="">None – standalone</option>
+                    {supersetCandidates.map(e => <option key={e.id} value={e.id}>{e.name}{e.supersetGroupId ? ' ⚡' : ''}</option>)}
+                  </select>
+                </div>
+              )
             )}
-            <Button fullWidth onClick={saveExercise}>
+
+            {/* Feature 1: loading spinner on save */}
+            <Button fullWidth loading={upsertPlan.isPending} onClick={saveExercise}>
               {editingId ? 'Save Changes' : 'Add Exercise'}
             </Button>
             {editingId && (

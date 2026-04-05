@@ -12,20 +12,48 @@ import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../type
 
 // ─── Elapsed workout timer ────────────────────────────────────────────────────
 
-function useElapsedTime(startedAt: string | null | undefined, fallback: string): string {
-  const anchor = startedAt ?? fallback;  // fall back to workout.date if startedAt missing
-  const [elapsed, setElapsed] = useState(() =>
-    Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 1000))
-  );
+function useElapsedTime(startedAt: string | null | undefined): string {
+  // If startedAt is missing (old workout in localStorage), fall back to "now"
+  // so the timer always starts at 0:00 instead of showing stale time.
+  const anchorRef = useRef(startedAt ?? new Date().toISOString());
+  if (startedAt) anchorRef.current = startedAt; // update if it becomes available
+
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
+    const anchor = anchorRef.current;
     const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 1000)));
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [anchor]);
+  }, []);                                        // run once on mount — anchor is stable via ref
   const m = Math.floor(elapsed / 60);
   const s = elapsed % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ─── Rest timer sound (Web Audio API — no external files needed) ──────────────
+
+function playDoneSound() {
+  try {
+    const ctx = new AudioContext();
+    // Three ascending notes: C5 → E5 → G5
+    ([
+      [0,    523.25, 0.18],
+      [0.18, 659.25, 0.18],
+      [0.36, 783.99, 0.35],
+    ] as [number, number, number][]).forEach(([when, freq, dur]) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.25, ctx.currentTime + when);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + when + dur);
+      osc.start(ctx.currentTime + when);
+      osc.stop(ctx.currentTime + when + dur + 0.05);
+    });
+  } catch { /* browser blocked audio — silently ignore */ }
 }
 
 // ─── Rest timer ───────────────────────────────────────────────────────────────
@@ -45,7 +73,11 @@ function RestTimer() {
     setRemaining(secs);
     intervalRef.current = setInterval(() => {
       setRemaining(r => {
-        if (r === null || r <= 1) { clearInterval(intervalRef.current!); return null; }
+        if (r === null || r <= 1) {
+          clearInterval(intervalRef.current!);
+          playDoneSound();
+          return null;
+        }
         return r - 1;
       });
     }, 1000);
@@ -299,7 +331,7 @@ export function LogSessionPage() {
   const insertWorkout = useInsertWorkout();
   const { data: allWorkouts = [] } = useWorkouts();
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
-  const elapsed = useElapsedTime(workout?.startedAt, workout?.date ?? new Date().toISOString());
+  const elapsed = useElapsedTime(workout?.startedAt);
 
   if (!workout) {
     navigate('/log', { replace: true });

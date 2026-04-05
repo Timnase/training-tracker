@@ -12,15 +12,17 @@ import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../type
 
 // ─── Elapsed workout timer ────────────────────────────────────────────────────
 
-function useElapsedTime(startedAt: string | null | undefined): string {
-  const [elapsed, setElapsed] = useState(0);
+function useElapsedTime(startedAt: string | null | undefined, fallback: string): string {
+  const anchor = startedAt ?? fallback;  // fall back to workout.date if startedAt missing
+  const [elapsed, setElapsed] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 1000))
+  );
   useEffect(() => {
-    if (!startedAt) return;
-    const tick = () => setElapsed(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 1000)));
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [startedAt]);
+  }, [anchor]);
   const m = Math.floor(elapsed / 60);
   const s = elapsed % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
@@ -28,50 +30,78 @@ function useElapsedTime(startedAt: string | null | undefined): string {
 
 // ─── Rest timer ───────────────────────────────────────────────────────────────
 
-const REST_DEFAULT = 90;
+const PRESETS = [30, 60, 90, 120, 180];
 
 function RestTimer() {
+  const [duration,  setDuration]  = useState(90);
+  const [custom,    setCustom]    = useState('');
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [total,     setTotal]     = useState(90); // duration used for current run (for pct)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const start = (secs = REST_DEFAULT) => {
+  const start = (secs: number) => {
     if (intervalRef.current) clearInterval(intervalRef.current);
+    setTotal(secs);
     setRemaining(secs);
     intervalRef.current = setInterval(() => {
       setRemaining(r => {
-        if (r === null || r <= 1) {
-          clearInterval(intervalRef.current!);
-          return null;
-        }
+        if (r === null || r <= 1) { clearInterval(intervalRef.current!); return null; }
         return r - 1;
       });
     }, 1000);
   };
 
-  const stop = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    setRemaining(null);
-  };
+  const stop = () => { if (intervalRef.current) clearInterval(intervalRef.current); setRemaining(null); };
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
+  // ── Idle state: preset picker + custom input ──
   if (remaining === null) {
     return (
-      <button
-        onClick={() => start()}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-slate-200 text-slate-400 hover:border-primary-300 hover:text-primary-500 text-sm font-semibold transition-all"
-      >
-        ⏱ Start rest timer (90s)
-      </button>
+      <div className="rounded-xl border-2 border-dashed border-slate-200 p-3 space-y-2">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 text-center">Rest Timer</p>
+        <div className="flex gap-1.5">
+          {PRESETS.map(p => (
+            <button
+              key={p}
+              onClick={() => { setDuration(p); setCustom(''); }}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-bold border-2 transition-all
+                ${duration === p && !custom
+                  ? 'border-primary-500 bg-primary-50 text-primary-600'
+                  : 'border-slate-200 text-slate-400'}`}
+            >
+              {p >= 60 ? `${p / 60}m` : `${p}s`}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min="5"
+            max="600"
+            placeholder="Custom (s)"
+            value={custom}
+            onChange={e => { setCustom(e.target.value); if (e.target.value) setDuration(parseInt(e.target.value)); }}
+            className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
+          />
+          <button
+            onClick={() => start(duration)}
+            className="flex-1 py-2 rounded-xl bg-primary-500 text-white text-sm font-bold hover:bg-primary-600 transition-colors"
+          >
+            ▶ Start {duration}s
+          </button>
+        </div>
+      </div>
     );
   }
 
-  const pct = (remaining / REST_DEFAULT) * 100;
+  // ── Running state ──
+  const pct    = (remaining / total) * 100;
   const urgent = remaining <= 10;
   return (
     <div className={`rounded-xl p-3 flex items-center gap-3 ${urgent ? 'bg-red-50' : 'bg-primary-50'}`}>
-      <div className="relative w-10 h-10 flex-shrink-0">
-        <svg className="w-10 h-10 -rotate-90" viewBox="0 0 36 36">
+      <div className="relative w-12 h-12 flex-shrink-0">
+        <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
           <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
           <circle
             cx="18" cy="18" r="15" fill="none"
@@ -82,7 +112,7 @@ function RestTimer() {
             strokeLinecap="round"
           />
         </svg>
-        <span className={`absolute inset-0 flex items-center justify-center text-[11px] font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
+        <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
           {remaining}
         </span>
       </div>
@@ -93,8 +123,8 @@ function RestTimer() {
         <p className="text-xs text-slate-400">{remaining}s remaining</p>
       </div>
       <div className="flex gap-2">
-        <button onClick={() => start()} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
-        <button onClick={stop} className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
+        <button onClick={() => start(total)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
+        <button onClick={stop}              className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
       </div>
     </div>
   );
@@ -269,7 +299,7 @@ export function LogSessionPage() {
   const insertWorkout = useInsertWorkout();
   const { data: allWorkouts = [] } = useWorkouts();
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
-  const elapsed = useElapsedTime(workout?.startedAt);
+  const elapsed = useElapsedTime(workout?.startedAt, workout?.date ?? new Date().toISOString());
 
   if (!workout) {
     navigate('/log', { replace: true });

@@ -37,10 +37,12 @@ function useElapsedTime(startedAt: string | null | undefined): string {
 }
 
 // ─── Rest timer sound ─────────────────────────────────────────────────────────
+// The AudioContext must be created (and resumed) inside a user-gesture handler —
+// iOS and some desktop browsers silently block it otherwise. We create it once
+// when the user taps a preset button and reuse it at expiry.
 
-function playDoneSound() {
+function playDoneSound(ctx: AudioContext) {
   try {
-    const ctx = new AudioContext();
     ([
       [0,    523.25, 0.18],
       [0.18, 659.25, 0.18],
@@ -70,18 +72,30 @@ function RestTimer() {
   const [remaining, setRemaining] = useState<number | null>(null);
   const [custom,    setCustom]    = useState('');
   const [selected,  setSelected]  = useState(90);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Unlocked inside a user-gesture so iOS allows it to play at expiry
+  const audioCtxRef  = useRef<AudioContext | null>(null);
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
+  const unlockAudio = () => {
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+      if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+    } catch { /* unsupported */ }
+  };
+
   const start = (secs: number) => {
+    unlockAudio(); // must be inside the tap handler (user gesture)
     if (intervalRef.current) clearInterval(intervalRef.current);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
     intervalRef.current = setInterval(() => {
       const r = calcRemaining(end);
-      if (r <= 0) { clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null); playDoneSound(); }
-      else setRemaining(r);
+      if (r <= 0) {
+        clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
+        if (audioCtxRef.current) playDoneSound(audioCtxRef.current);
+      } else setRemaining(r);
     }, 250); // poll 4× per second for accuracy
   };
 
@@ -95,7 +109,10 @@ function RestTimer() {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) { stop(); playDoneSound(); } else setRemaining(r);
+        if (r <= 0) {
+          stop();
+          if (audioCtxRef.current) playDoneSound(audioCtxRef.current);
+        } else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);

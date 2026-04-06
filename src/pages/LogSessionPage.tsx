@@ -11,152 +11,166 @@ import { daysAgo } from '../utils';
 import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../types';
 
 // ─── Elapsed workout timer ────────────────────────────────────────────────────
+// Uses the absolute start timestamp so background throttling can't skew it.
+// Re-syncs immediately on tab focus via visibilitychange.
 
 function useElapsedTime(startedAt: string | null | undefined): string {
-  // If startedAt is missing (old workout in localStorage), fall back to "now"
-  // so the timer always starts at 0:00 instead of showing stale time.
   const anchorRef = useRef(startedAt ?? new Date().toISOString());
-  if (startedAt) anchorRef.current = startedAt; // update if it becomes available
+  if (startedAt) anchorRef.current = startedAt;
 
-  const [elapsed, setElapsed] = useState(0);
+  const calc = () => Math.max(0, Math.floor((Date.now() - new Date(anchorRef.current).getTime()) / 1000));
+  const [elapsed, setElapsed] = useState(calc);
+
   useEffect(() => {
-    const anchor = anchorRef.current;
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 1000)));
+    const tick = () => setElapsed(calc());
     tick();
     const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, []);                                        // run once on mount — anchor is stable via ref
+    // Re-sync instantly when user comes back from another app / tab
+    const onVisible = () => { if (!document.hidden) tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const m = Math.floor(elapsed / 60);
   const s = elapsed % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// ─── Rest timer sound (Web Audio API — no external files needed) ──────────────
+// ─── Rest timer sound ─────────────────────────────────────────────────────────
 
 function playDoneSound() {
   try {
     const ctx = new AudioContext();
-    // Three ascending notes: C5 → E5 → G5
     ([
       [0,    523.25, 0.18],
       [0.18, 659.25, 0.18],
       [0.36, 783.99, 0.35],
     ] as [number, number, number][]).forEach(([when, freq, dur]) => {
-      const osc  = ctx.createOscillator();
+      const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine'; osc.frequency.value = freq;
       gain.gain.setValueAtTime(0.25, ctx.currentTime + when);
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + when + dur);
       osc.start(ctx.currentTime + when);
       osc.stop(ctx.currentTime + when + dur + 0.05);
     });
-  } catch { /* browser blocked audio — silently ignore */ }
+  } catch { /* audio unavailable */ }
 }
 
 // ─── Rest timer ───────────────────────────────────────────────────────────────
+// Uses an absolute endTime so the countdown stays accurate even when the
+// browser throttles intervals in the background.
 
 const PRESETS = [30, 60, 90, 120, 180];
 
 function RestTimer() {
-  const [duration,  setDuration]  = useState(90);
-  const [custom,    setCustom]    = useState('');
+  const [endTime,   setEndTime]   = useState<number | null>(null); // absolute ms timestamp
+  const [total,     setTotal]     = useState(90);
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [total,     setTotal]     = useState(90); // duration used for current run (for pct)
+  const [custom,    setCustom]    = useState('');
+  const [selected,  setSelected]  = useState(90);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
   const start = (secs: number) => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    setTotal(secs);
-    setRemaining(secs);
+    const end = Date.now() + secs * 1000;
+    setEndTime(end); setTotal(secs); setRemaining(secs);
     intervalRef.current = setInterval(() => {
-      setRemaining(r => {
-        if (r === null || r <= 1) {
-          clearInterval(intervalRef.current!);
-          playDoneSound();
-          return null;
-        }
-        return r - 1;
-      });
-    }, 1000);
+      const r = calcRemaining(end);
+      if (r <= 0) { clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null); playDoneSound(); }
+      else setRemaining(r);
+    }, 250); // poll 4× per second for accuracy
   };
 
-  const stop = () => { if (intervalRef.current) clearInterval(intervalRef.current); setRemaining(null); };
+  const stop = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setEndTime(null); setRemaining(null);
+  };
+
+  // Re-sync when returning from background (background throttles intervals)
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && endTime) {
+        const r = calcRemaining(endTime);
+        if (r <= 0) { stop(); playDoneSound(); } else setRemaining(r);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [endTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
-  // ── Idle state: preset picker + custom input ──
-  if (remaining === null) {
+  // ── Running ──
+  if (remaining !== null) {
+    const pct    = (remaining / total) * 100;
+    const urgent = remaining <= 10;
     return (
-      <div className="rounded-xl border-2 border-dashed border-slate-200 p-3 space-y-2">
-        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 text-center">Rest Timer</p>
-        <div className="flex gap-1.5">
-          {PRESETS.map(p => (
-            <button
-              key={p}
-              onClick={() => { setDuration(p); setCustom(''); }}
-              className={`flex-1 py-1.5 rounded-lg text-xs font-bold border-2 transition-all
-                ${duration === p && !custom
-                  ? 'border-primary-500 bg-primary-50 text-primary-600'
-                  : 'border-slate-200 text-slate-400'}`}
-            >
-              {p >= 60 ? `${p / 60}m` : `${p}s`}
-            </button>
-          ))}
+      <div className={`rounded-xl p-3 flex items-center gap-3 ${urgent ? 'bg-red-50' : 'bg-primary-50'}`}>
+        <div className="relative w-12 h-12 flex-shrink-0">
+          <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
+            <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
+            <circle cx="18" cy="18" r="15" fill="none"
+              stroke={urgent ? '#ef4444' : '#6366f1'} strokeWidth="3"
+              strokeDasharray={`${2 * Math.PI * 15}`}
+              strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
+              strokeLinecap="round"
+            />
+          </svg>
+          <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
+            {remaining}
+          </span>
+        </div>
+        <div className="flex-1">
+          <p className={`text-sm font-bold ${urgent ? 'text-red-500' : 'text-primary-700'}`}>
+            {urgent ? 'Almost done!' : 'Resting…'}
+          </p>
+          <p className="text-xs text-slate-400">{remaining}s left</p>
         </div>
         <div className="flex gap-2">
-          <input
-            type="number"
-            min="5"
-            max="600"
-            placeholder="Custom (s)"
-            value={custom}
-            onChange={e => { setCustom(e.target.value); if (e.target.value) setDuration(parseInt(e.target.value)); }}
-            className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
-          />
-          <button
-            onClick={() => start(duration)}
-            className="flex-1 py-2 rounded-xl bg-primary-500 text-white text-sm font-bold hover:bg-primary-600 transition-colors"
-          >
-            ▶ Start {duration}s
-          </button>
+          <button onClick={() => start(total)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
+          <button onClick={stop}              className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
         </div>
       </div>
     );
   }
 
-  // ── Running state ──
-  const pct    = (remaining / total) * 100;
-  const urgent = remaining <= 10;
+  // ── Idle: tap a preset to start instantly, or type custom ──
   return (
-    <div className={`rounded-xl p-3 flex items-center gap-3 ${urgent ? 'bg-red-50' : 'bg-primary-50'}`}>
-      <div className="relative w-12 h-12 flex-shrink-0">
-        <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
-          <circle
-            cx="18" cy="18" r="15" fill="none"
-            stroke={urgent ? '#ef4444' : '#6366f1'}
-            strokeWidth="3"
-            strokeDasharray={`${2 * Math.PI * 15}`}
-            strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
-            strokeLinecap="round"
-          />
-        </svg>
-        <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
-          {remaining}
-        </span>
-      </div>
-      <div className="flex-1">
-        <p className={`text-sm font-bold ${urgent ? 'text-red-500' : 'text-primary-700'}`}>
-          {urgent ? 'Almost done!' : 'Resting…'}
-        </p>
-        <p className="text-xs text-slate-400">{remaining}s remaining</p>
+    <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+      <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 text-center">Rest Timer — tap to start</p>
+      <div className="flex gap-1.5">
+        {PRESETS.map(p => (
+          <button
+            key={p}
+            onClick={() => { setSelected(p); setCustom(''); start(p); }}
+            className={`flex-1 py-2 rounded-lg text-xs font-bold border-2 transition-all active:scale-95
+              ${selected === p && !custom
+                ? 'border-primary-500 bg-primary-50 text-primary-600'
+                : 'border-slate-200 text-slate-500 hover:border-primary-300'}`}
+          >
+            {p >= 60 ? `${p / 60}m` : `${p}s`}
+          </button>
+        ))}
       </div>
       <div className="flex gap-2">
-        <button onClick={() => start(total)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
-        <button onClick={stop}              className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
+        <input
+          type="number" min="5" max="600" placeholder="Custom sec"
+          value={custom}
+          onChange={e => { setCustom(e.target.value); if (e.target.value) setSelected(parseInt(e.target.value)); }}
+          className="flex-1 px-3 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
+        />
+        {custom && (
+          <button
+            onClick={() => start(parseInt(custom) || 90)}
+            className="px-4 py-1.5 rounded-xl bg-primary-500 text-white text-sm font-bold"
+          >
+            ▶ {custom}s
+          </button>
+        )}
       </div>
     </div>
   );
@@ -333,6 +347,15 @@ export function LogSessionPage() {
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
 
+  // Auto-save indicator — workout is already saved to localStorage on every change
+  const [savedFlash, setSavedFlash] = useState(false);
+  useEffect(() => {
+    if (!workout) return;
+    setSavedFlash(true);
+    const t = setTimeout(() => setSavedFlash(false), 1500);
+    return () => clearTimeout(t);
+  }, [workout]);
+
   if (!workout) {
     navigate('/log', { replace: true });
     return null;
@@ -366,10 +389,15 @@ export function LogSessionPage() {
       <Header title={workout.workoutTemplateName} showBack />
 
       <div className="p-4 space-y-5 pb-8">
-        {/* Plan name + elapsed timer */}
+        {/* Plan name + elapsed timer + auto-save indicator */}
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
-          <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
+          <div className="flex items-center gap-3">
+            <span className={`text-[10px] font-semibold transition-opacity duration-500 ${savedFlash ? 'text-green-500 opacity-100' : 'opacity-0'}`}>
+              ✓ Saved
+            </span>
+            <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
+          </div>
         </div>
 
         {/* Rest timer */}

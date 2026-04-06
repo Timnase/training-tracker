@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { usePlans } from '../hooks/usePlans';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { useActivePlanId } from '../hooks/useSettings';
+import { useActiveWorkout } from '../hooks/useActiveWorkout';
 import { Spinner } from '../components/ui/Spinner';
 import { Button } from '../components/ui/Button';
 import { Card, CardLabel } from '../components/ui/Card';
@@ -63,10 +64,11 @@ export function DashboardPage() {
   const { data: plans = [],    isLoading: plansLoading }    = usePlans();
   const { data: workouts = [], isLoading: workoutsLoading } = useWorkouts();
   const { data: activePlanId,  isLoading: settingsLoading } = useActivePlanId();
+  const { setWorkout } = useActiveWorkout();
 
   if (plansLoading || workoutsLoading || settingsLoading) return <Spinner />;
 
-  const activePlan = plans.find(p => p.id === activePlanId) ?? null;
+  const activePlan  = plans.find(p => p.id === activePlanId) ?? null;
   const lastWorkout = workouts[0] ?? null;
 
   const now = new Date();
@@ -75,11 +77,28 @@ export function DashboardPage() {
   const weekCount  = workouts.filter(w => new Date(w.date) >= weekStart).length;
   const monthCount = workouts.filter(w => new Date(w.date) >= monthStart).length;
 
-  // Suggest next workout
-  const templates = activePlan?.workouts ?? [];
+  // Determine suggested next workout
+  const templates       = activePlan?.workouts ?? [];
   const lastPlanWorkout = workouts.find(w => w.planId === activePlanId);
-  const lastIdx  = templates.findIndex(t => t.id === lastPlanWorkout?.workoutTemplateId);
-  const nextWorkout = templates[(lastIdx + 1) % templates.length] ?? templates[0] ?? null;
+  const lastIdx         = templates.findIndex(t => t.id === lastPlanWorkout?.workoutTemplateId);
+  const nextId          = templates[(lastIdx + 1) % templates.length]?.id ?? templates[0]?.id;
+
+  const startWorkout = (workoutTemplateId: string) => {
+    const wt = activePlan!.workouts.find(w => w.id === workoutTemplateId)!;
+    setWorkout({
+      id: crypto.randomUUID(),
+      planId: activePlan!.id, planName: activePlan!.name,
+      workoutTemplateId: wt.id, workoutTemplateName: wt.name,
+      date: new Date().toISOString(), startedAt: new Date().toISOString(),
+      feeling: null, cardio: null, notes: '',
+      exercises: wt.exercises.map(ex => ({
+        exerciseId: ex.id, exerciseName: ex.name,
+        sets: Array.from({ length: ex.defaultSets }, () => ({ weight: null, reps: null, difficulty: null })),
+        note: '',
+      })),
+    });
+    navigate('/log/session');
+  };
 
   return (
     <div className="p-4 space-y-4">
@@ -90,26 +109,35 @@ export function DashboardPage() {
 
       {activePlan ? (
         <Card>
-          <CardLabel>Active Plan</CardLabel>
-          <p className="text-lg font-extrabold text-slate-900 mb-1">{activePlan.name}</p>
-          {nextWorkout && lastPlanWorkout && (
+          <CardLabel>Active Plan · {activePlan.name}</CardLabel>
+          {lastPlanWorkout && (
             <p className="text-xs text-slate-400 mb-3">
               Last: {lastPlanWorkout.workoutTemplateName} ({daysAgo(lastPlanWorkout.date)})
             </p>
           )}
-          {nextWorkout && (
-            <div className="bg-primary-50 rounded-xl px-4 py-2.5 flex items-center gap-3 mb-3">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4 text-primary-500 flex-shrink-0"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-primary-500">Next up</p>
-                <p className="text-sm font-bold text-primary-600">{nextWorkout.name}</p>
-              </div>
-            </div>
-          )}
-          <Button fullWidth size="lg" onClick={() => navigate('/log')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-            Start Workout
-          </Button>
+          <div className="space-y-2">
+            {templates.map(wt => {
+              const isNext = wt.id === nextId;
+              return (
+                <button
+                  key={wt.id}
+                  onClick={() => startWorkout(wt.id)}
+                  className={`w-full text-left rounded-xl px-4 py-3 flex items-center gap-3 transition-all active:scale-[0.98]
+                    ${isNext
+                      ? 'bg-primary-500 text-white shadow-md'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-4 h-4 flex-shrink-0"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-sm">{wt.name}</p>
+                    <p className={`text-xs mt-0.5 ${isNext ? 'text-primary-200' : 'text-slate-400'}`}>
+                      {wt.exercises.length} exercises{isNext ? ' · Next up' : ''}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </Card>
       ) : (
         <Card className="text-center py-8">

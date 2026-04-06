@@ -1,33 +1,32 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { Spinner } from './components/ui/Spinner';
+import { SplashScreen } from './components/SplashScreen';
 import { BottomNav } from './components/layout/BottomNav';
 import { supabase } from './lib/supabase';
 
-import { AuthPage }           from './pages/AuthPage';
-import { ResetPasswordPage }  from './pages/ResetPasswordPage';
-import { DashboardPage }      from './pages/DashboardPage';
-import { PlansPage }          from './pages/PlansPage';
-import { PlanEditPage }       from './pages/PlanEditPage';
-import { WorkoutEditPage }    from './pages/WorkoutEditPage';
-import { LogPage }            from './pages/LogPage';
-import { LogSessionPage }     from './pages/LogSessionPage';
-import { HistoryPage }        from './pages/HistoryPage';
-import { SettingsPage }       from './pages/SettingsPage';
+// Lazy-load every page so the initial bundle is tiny and the
+// splash screen shows immediately while chunks download.
+const AuthPage           = lazy(() => import('./pages/AuthPage').then(m => ({ default: m.AuthPage })));
+const ResetPasswordPage  = lazy(() => import('./pages/ResetPasswordPage').then(m => ({ default: m.ResetPasswordPage })));
+const DashboardPage      = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const PlansPage          = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })));
+const PlanEditPage       = lazy(() => import('./pages/PlanEditPage').then(m => ({ default: m.PlanEditPage })));
+const WorkoutEditPage    = lazy(() => import('./pages/WorkoutEditPage').then(m => ({ default: m.WorkoutEditPage })));
+const LogPage            = lazy(() => import('./pages/LogPage').then(m => ({ default: m.LogPage })));
+const LogSessionPage     = lazy(() => import('./pages/LogSessionPage').then(m => ({ default: m.LogSessionPage })));
+const HistoryPage        = lazy(() => import('./pages/HistoryPage').then(m => ({ default: m.HistoryPage })));
+const SettingsPage       = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 
-// Listens for Supabase PASSWORD_RECOVERY event and redirects to the reset page
 function PasswordRecoveryListener() {
   const navigate = useNavigate();
   useEffect(() => {
-    // PKCE recovery: Supabase redirects to ?recovery=1&code=XXX
-    // Check the param immediately — no event timing race condition
     const params = new URLSearchParams(window.location.search);
     if (params.get('recovery') === '1') {
       navigate('/reset-password', { replace: true });
       return;
     }
-    // Fallback for any other recovery flow
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') navigate('/reset-password', { replace: true });
     });
@@ -55,41 +54,37 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 export function App() {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <Spinner />
-      </div>
-    );
-  }
+  if (loading) return <SplashScreen />;
 
   return (
     <HashRouter>
       <PasswordRecoveryListener />
-      <Routes>
-        {/* Public */}
-        <Route path="/auth"           element={user ? <Navigate to="/" replace /> : <AuthPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Suspense fallback={<SplashScreen />}>
+        <Routes>
+          <Route path="/auth"           element={user ? <Navigate to="/" replace /> : <AuthPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
 
-        {/* Protected */}
-        <Route path="/*" element={
-          <AuthGuard>
-            <AppLayout>
-              <Routes>
-                <Route index                                        element={<DashboardPage />} />
-                <Route path="plans"                                element={<PlansPage />} />
-                <Route path="plans/:planId"                        element={<PlanEditPage />} />
-                <Route path="plans/:planId/workouts/:workoutId"    element={<WorkoutEditPage />} />
-                <Route path="log"                                  element={<LogPage />} />
-                <Route path="log/session"                         element={<LogSessionPage />} />
-                <Route path="history"                              element={<HistoryPage />} />
-                <Route path="settings"                             element={<SettingsPage />} />
-                <Route path="*"                                    element={<Navigate to="/" replace />} />
-              </Routes>
-            </AppLayout>
-          </AuthGuard>
-        } />
-      </Routes>
+          <Route path="/*" element={
+            <AuthGuard>
+              <AppLayout>
+                <Suspense fallback={<Spinner />}>
+                  <Routes>
+                    <Route index                                     element={<DashboardPage />} />
+                    <Route path="plans"                              element={<PlansPage />} />
+                    <Route path="plans/:planId"                      element={<PlanEditPage />} />
+                    <Route path="plans/:planId/workouts/:workoutId"  element={<WorkoutEditPage />} />
+                    <Route path="log"                                element={<LogPage />} />
+                    <Route path="log/session"                        element={<LogSessionPage />} />
+                    <Route path="history"                            element={<HistoryPage />} />
+                    <Route path="settings"                           element={<SettingsPage />} />
+                    <Route path="*"                                  element={<Navigate to="/" replace />} />
+                  </Routes>
+                </Suspense>
+              </AppLayout>
+            </AuthGuard>
+          } />
+        </Routes>
+      </Suspense>
     </HashRouter>
   );
 }

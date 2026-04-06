@@ -37,28 +37,53 @@ function useElapsedTime(startedAt: string | null | undefined): string {
 }
 
 // ─── Rest timer sound ─────────────────────────────────────────────────────────
-// The AudioContext must be created (and resumed) inside a user-gesture handler —
-// iOS and some desktop browsers silently block it otherwise. We create it once
-// when the user taps a preset button and reuse it at expiry.
+// Generate a 3-beep WAV as a blob URL once at module load.
+// Using HTML <Audio> instead of Web Audio API: iOS blocks AudioContext nodes
+// created outside a user gesture even after resume(), but an <Audio> element
+// that was play()-ed (even silently) during a gesture can replay freely.
 
-function playDoneSound(ctx: AudioContext) {
+function _makeBeepUrl(): string {
   try {
-    ([
-      [0,    523.25, 0.18],
-      [0.18, 659.25, 0.18],
-      [0.36, 783.99, 0.35],
-    ] as [number, number, number][]).forEach(([when, freq, dur]) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.type = 'sine'; osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.25, ctx.currentTime + when);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + when + dur);
-      osc.start(ctx.currentTime + when);
-      osc.stop(ctx.currentTime + when + dur + 0.05);
-    });
-  } catch { /* audio unavailable */ }
+    const sr = 8000;
+    const notes: Array<[number, number, number]> = [
+      [0,    523.25, 0.20], // C5
+      [0.22, 659.25, 0.20], // E5
+      [0.44, 783.99, 0.35], // G5
+    ];
+    const totalSecs = 0.85;
+    const n = Math.ceil(sr * totalSecs);
+    const pcm = new Float32Array(n);
+    for (const [t0, freq, dur] of notes) {
+      const s0 = Math.floor(t0 * sr);
+      const sn = Math.floor(dur * sr);
+      for (let i = 0; i < sn && s0 + i < n; i++) {
+        const env = Math.min(i / (sr * 0.01), 1) * Math.min((sn - i) / (sr * 0.02), 1);
+        pcm[s0 + i] += 0.5 * Math.sin(2 * Math.PI * freq * i / sr) * env;
+      }
+    }
+    const samples = new Int16Array(n);
+    for (let i = 0; i < n; i++) samples[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
+    const dataLen = samples.byteLength;
+    const buf = new ArrayBuffer(44 + dataLen);
+    const dv  = new DataView(buf);
+    dv.setUint32( 0, 0x52494646, false); // "RIFF"
+    dv.setUint32( 4, 36 + dataLen, true);
+    dv.setUint32( 8, 0x57415645, false); // "WAVE"
+    dv.setUint32(12, 0x666d7420, false); // "fmt "
+    dv.setUint32(16, 16, true);
+    dv.setUint16(20, 1,  true);           // PCM
+    dv.setUint16(22, 1,  true);           // mono
+    dv.setUint32(24, sr, true);
+    dv.setUint32(28, sr * 2, true);       // byteRate
+    dv.setUint16(32, 2,  true);           // blockAlign
+    dv.setUint16(34, 16, true);           // bitsPerSample
+    dv.setUint32(36, 0x64617461, false);  // "data"
+    dv.setUint32(40, dataLen, true);
+    new Int16Array(buf, 44).set(samples);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  } catch { return ''; }
 }
+const BEEP_URL = _makeBeepUrl();
 
 // ─── Rest timer ───────────────────────────────────────────────────────────────
 // Uses an absolute endTime so the countdown stays accurate even when the
@@ -72,21 +97,30 @@ function RestTimer() {
   const [remaining, setRemaining] = useState<number | null>(null);
   const [custom,    setCustom]    = useState('');
   const [selected,  setSelected]  = useState(90);
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Unlocked inside a user-gesture so iOS allows it to play at expiry
-  const audioCtxRef  = useRef<AudioContext | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // HTML Audio element — unlocked (via silent play) inside the user's tap gesture
+  const audioRef    = useRef<HTMLAudioElement | null>(null);
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
+  // Must be called inside a tap handler so iOS allows future .play() calls
   const unlockAudio = () => {
-    try {
-      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
-      if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
-    } catch { /* unsupported */ }
+    if (!BEEP_URL) return;
+    const a = new Audio(BEEP_URL);
+    a.volume = 0.001; // near-silent so user doesn't hear it
+    a.play().catch(() => {});
+    audioRef.current = a;
+  };
+
+  const playBeep = () => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = 0;
+    audioRef.current.volume = 1;
+    audioRef.current.play().catch(() => {});
   };
 
   const start = (secs: number) => {
-    unlockAudio(); // must be inside the tap handler (user gesture)
+    unlockAudio(); // inside tap handler — iOS gesture unlock
     if (intervalRef.current) clearInterval(intervalRef.current);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
@@ -94,7 +128,7 @@ function RestTimer() {
       const r = calcRemaining(end);
       if (r <= 0) {
         clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
-        if (audioCtxRef.current) playDoneSound(audioCtxRef.current);
+        playBeep();
       } else setRemaining(r);
     }, 250); // poll 4× per second for accuracy
   };
@@ -109,10 +143,7 @@ function RestTimer() {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) {
-          stop();
-          if (audioCtxRef.current) playDoneSound(audioCtxRef.current);
-        } else setRemaining(r);
+        if (r <= 0) { stop(); playBeep(); } else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);

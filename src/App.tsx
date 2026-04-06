@@ -1,10 +1,33 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, Component } from 'react';
+import type { ReactNode } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { Spinner } from './components/ui/Spinner';
 import { SplashScreen } from './components/SplashScreen';
 import { BottomNav } from './components/layout/BottomNav';
 import { supabase } from './lib/supabase';
+
+// ─── Error boundary ───────────────────────────────────────────────────────────
+// Catches render errors and lazy-chunk load failures so the app never goes blank.
+class ErrorBoundary extends Component<{ children: ReactNode }, { crashed: boolean }> {
+  state = { crashed: false };
+  static getDerivedStateFromError() { return { crashed: true }; }
+  render() {
+    if (!this.state.crashed) return this.props.children;
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.5rem', textAlign: 'center', background: '#f8fafc' }}>
+        <p style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>😔</p>
+        <p style={{ fontWeight: 700, color: '#0f172a', marginBottom: '0.5rem' }}>Something went wrong</p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{ marginTop: '0.75rem', padding: '0.5rem 1.25rem', background: '#6366f1', color: '#fff', borderRadius: '0.75rem', border: 'none', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer' }}
+        >
+          Reload
+        </button>
+      </div>
+    );
+  }
+}
 
 // Lazy-load every page so the initial bundle is tiny and the
 // splash screen shows immediately while chunks download.
@@ -58,6 +81,7 @@ export function App() {
 
   return (
     <HashRouter>
+      <ErrorBoundary>
       <PasswordRecoveryListener />
       <Suspense fallback={<SplashScreen />}>
         <Routes>
@@ -85,6 +109,7 @@ export function App() {
           } />
         </Routes>
       </Suspense>
+      </ErrorBoundary>
     </HashRouter>
   );
 }

@@ -14,6 +14,10 @@ const queryClient = new QueryClient({
   },
 });
 
+// Remove the static HTML splash the moment React is ready to paint.
+// The React SplashScreen component takes over from here.
+document.getElementById('tt-splash')?.remove();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

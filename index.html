@@ -9,26 +9,28 @@
     <title>Training Tracker</title>
   </head>
   <body>
-    <!-- Static splash shown instantly before React JS downloads/parses.
-         React will replace this content when it mounts. -->
-    <div id="root">
-      <style>
-        @keyframes tt-bounce { from { transform: translateY(0) } to { transform: translateY(-8px) } }
-        #tt-splash { min-height:100dvh;background:#f8fafc;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;font-family:system-ui,-apple-system,sans-serif }
-        #tt-splash p { font-size:1.25rem;font-weight:800;color:#0f172a;margin:0 }
-        #tt-splash .dots { display:flex;gap:6px;margin-top:8px }
-        #tt-splash .dot { width:8px;height:8px;border-radius:50%;background:#818cf8;animation:tt-bounce .6s infinite alternate }
-      </style>
-      <div id="tt-splash">
-        <div style="font-size:3.5rem">💪</div>
-        <p>Training Tracker</p>
-        <div class="dots">
-          <span class="dot" style="animation-delay:0s"></span>
-          <span class="dot" style="animation-delay:.15s"></span>
-          <span class="dot" style="animation-delay:.3s"></span>
-        </div>
+    <!--
+      Static splash — shown the instant the HTML is parsed, before any JS loads.
+      Lives OUTSIDE #root so React never tries to reconcile it.
+      Removed programmatically in main.tsx the moment React mounts.
+    -->
+    <style>
+      @keyframes tt-b { from { transform:translateY(0) } to { transform:translateY(-8px) } }
+      #tt-splash { position:fixed;inset:0;z-index:9999;background:#f8fafc;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;font-family:system-ui,-apple-system,sans-serif }
+      #tt-splash p { font-size:1.25rem;font-weight:800;color:#0f172a;margin:0 }
+      #tt-splash .d { width:8px;height:8px;border-radius:50%;background:#818cf8;animation:tt-b .6s infinite alternate }
+    </style>
+    <div id="tt-splash">
+      <div style="font-size:3.5rem">💪</div>
+      <p>Training Tracker</p>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <span class="d" style="animation-delay:0s"></span>
+        <span class="d" style="animation-delay:.15s"></span>
+        <span class="d" style="animation-delay:.3s"></span>
       </div>
     </div>
+
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

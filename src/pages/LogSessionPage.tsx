@@ -107,7 +107,7 @@ function RestTimer() {
   const unlockAudio = () => {
     if (!BEEP_URL) return;
     const a = new Audio(BEEP_URL);
-    a.volume = 0.001; // near-silent so user doesn't hear it
+    a.volume = 0; // completely silent — just unlocks the element on iOS
     a.play().catch(() => {});
     audioRef.current = a;
   };

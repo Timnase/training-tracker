@@ -15,7 +15,7 @@ export const SettingsService = {
       user_id:        user!.id,
       active_plan_id: planId,
       updated_at:     new Date().toISOString(),
-    });
+    }, { onConflict: 'user_id' });
     if (error) throw error;
   },
 };

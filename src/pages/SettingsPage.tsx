@@ -1,10 +1,12 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { usePlans } from '../hooks/usePlans';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { useActivePlanId, useSetActivePlanId } from '../hooks/useSettings';
+import { useProfile, useSetProfile } from '../hooks/useProfile';
 import { useAuth } from '../hooks/useAuth';
 import { Header } from '../components/layout/Header';
 import { Button } from '../components/ui/Button';
+import { Input } from '../components/ui/Input';
 import { Spinner } from '../components/ui/Spinner';
 import { supabase } from '../lib/supabase';
 import type { WorkoutLog, Plan } from '../types';
@@ -24,12 +26,30 @@ function exportData(plans: Plan[], workouts: WorkoutLog[]) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { user }                            = useAuth();
-  const { data: plans    = [], isLoading: plansLoading }    = usePlans();
-  const { data: workouts = [], isLoading: workoutsLoading } = useWorkouts();
-  const { data: activePlanId }              = useActivePlanId();
-  const setActivePlan                       = useSetActivePlanId();
-  const fileRef                             = useRef<HTMLInputElement>(null);
+  const { user }                                                     = useAuth();
+  const { data: plans    = [], isLoading: plansLoading }             = usePlans();
+  const { data: workouts = [], isLoading: workoutsLoading }          = useWorkouts();
+  const { data: activePlanId }                                       = useActivePlanId();
+  const { data: profile,       isLoading: profileLoading }           = useProfile();
+  const setActivePlan                                                = useSetActivePlanId();
+  const setProfile                                                   = useSetProfile();
+  const fileRef                                                      = useRef<HTMLInputElement>(null);
+
+  const [displayName,    setDisplayName]    = useState('');
+  const [nameSaved,      setNameSaved]      = useState(false);
+  const [nameInitialised, setNameInitialised] = useState(false);
+
+  // Pre-fill once profile loads
+  if (!profileLoading && !nameInitialised) {
+    setDisplayName(profile?.display_name ?? '');
+    setNameInitialised(true);
+  }
+
+  const saveProfile = async () => {
+    await setProfile.mutateAsync(displayName);
+    setNameSaved(true);
+    setTimeout(() => setNameSaved(false), 2000);
+  };
 
   const isLoading = plansLoading || workoutsLoading;
 
@@ -44,14 +64,16 @@ export function SettingsPage() {
         if (!confirm(`Import ${data.plans?.length ?? 0} plans and ${data.workouts?.length ?? 0} workouts? This adds to existing data.`)) return;
 
         for (const plan of data.plans ?? []) {
-          await supabase.from('plans').upsert({ id: plan.id, name: plan.name, workouts: plan.workouts });
+          await supabase.from('plans').upsert({
+            id: plan.id, user_id: user!.id, name: plan.name, workouts: plan.workouts,
+          }, { onConflict: 'id' });
         }
         for (const w of data.workouts ?? []) {
           await supabase.from('workouts').upsert({
-            id: w.id, plan_id: w.planId, plan_name: w.planName,
+            id: w.id, user_id: user!.id, plan_id: w.planId, plan_name: w.planName,
             workout_template_id: w.workoutTemplateId, workout_template_name: w.workoutTemplateName,
             date: w.date, feeling: w.feeling, cardio: w.cardio, notes: w.notes, exercises: w.exercises,
-          });
+          }, { onConflict: 'id' });
         }
         alert('Import complete! Refresh to see changes.');
       } catch {
@@ -64,7 +86,6 @@ export function SettingsPage() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    // Replace entire history so back button can't return to a logged-in page
     window.location.replace(window.location.pathname + '#/auth');
   };
 
@@ -73,10 +94,38 @@ export function SettingsPage() {
       <Header title="Settings" />
       <div className="p-4 space-y-5 pb-8">
 
+        {/* Profile */}
+        <section className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Profile</p>
+          {profileLoading ? <Spinner /> : (
+            <>
+              <Input
+                label="Display Name"
+                placeholder="Your name"
+                value={displayName}
+                onChange={e => setDisplayName(e.target.value)}
+              />
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  loading={setProfile.isPending}
+                  onClick={saveProfile}
+                >
+                  Save
+                </Button>
+                {nameSaved && <span className="text-xs text-green-500 font-semibold">✓ Saved</span>}
+              </div>
+            </>
+          )}
+        </section>
+
         {/* Account */}
         <section className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
           <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Account</p>
-          <p className="text-sm text-slate-700 font-semibold">{user?.email}</p>
+          <p className="text-sm font-bold text-slate-900">
+            {profile?.display_name || user?.email}
+          </p>
+          <p className="text-xs text-slate-400">{user?.email}</p>
           <Button variant="outline" size="sm" onClick={handleLogout}>Sign Out</Button>
         </section>
 

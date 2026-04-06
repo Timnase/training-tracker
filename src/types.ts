@@ -86,6 +86,12 @@ export interface UserSettingsRow {
   active_plan_id: string | null;
 }
 
+export interface ProfileRow {
+  id:           string;
+  display_name: string | null;
+  updated_at:   string;
+}
+
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
 /** Exercises grouped for rendering (single or superset pair). */

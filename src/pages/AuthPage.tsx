@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { ProfileService } from '../services/profile.service';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 
 type Mode = 'login' | 'signup' | 'forgot';
 
 export function AuthPage() {
-  const [mode,     setMode]     = useState<Mode>('login');
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [error,    setError]    = useState('');
-  const [success,  setSuccess]  = useState('');
-  const [loading,  setLoading]  = useState(false);
+  const [mode,        setMode]        = useState<Mode>('login');
+  const [email,       setEmail]       = useState('');
+  const [password,    setPassword]    = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error,       setError]       = useState('');
+  const [success,     setSuccess]     = useState('');
+  const [loading,     setLoading]     = useState(false);
 
   const reset = (next: Mode) => { setMode(next); setError(''); setSuccess(''); };
 
@@ -29,10 +31,18 @@ export function AuthPage() {
       return;
     }
 
-    const fn = mode === 'login'
-      ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password });
-    const { error: authError } = await fn;
+    if (mode === 'signup') {
+      const { error: authError } = await supabase.auth.signUp({ email, password });
+      if (authError) { setError(authError.message); setLoading(false); return; }
+      // Save display name right after sign-up if provided
+      if (displayName.trim()) {
+        try { await ProfileService.upsertProfile(displayName); } catch { /* non-critical */ }
+      }
+      setLoading(false);
+      return;
+    }
+
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     if (authError) setError(authError.message);
     setLoading(false);
   };
@@ -74,6 +84,15 @@ export function AuthPage() {
               value={password}
               onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && submit()}
+            />
+          )}
+
+          {mode === 'signup' && (
+            <Input
+              label="Display Name (optional)"
+              placeholder="Your name"
+              value={displayName}
+              onChange={e => setDisplayName(e.target.value)}
             />
           )}
 

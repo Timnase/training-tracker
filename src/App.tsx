@@ -46,20 +46,28 @@ function PasswordRecoveryListener() {
   const navigate = useNavigate();
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+
+    // Primary path: token_hash approach (works in ANY browser — no code_verifier needed).
+    // The Supabase email template links directly to our app with ?type=recovery&token_hash=...
+    const tokenHash = params.get('token_hash');
+    if (tokenHash && params.get('type') === 'recovery') {
+      supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'recovery' })
+        .finally(() => navigate('/reset-password', { replace: true }));
+      return;
+    }
+
+    // Legacy path: PKCE code exchange (kept for any old reset emails still in inboxes).
     if (params.get('recovery') === '1') {
       const code = params.get('code');
       if (code) {
-        // Exchange the PKCE code FIRST so the session is ready before we navigate.
-        // Previously we navigated immediately, creating a race condition where the
-        // 6-second poll on ResetPasswordPage timed out before the exchange completed.
-        supabase.auth.exchangeCodeForSession(code).finally(() => {
-          navigate('/reset-password', { replace: true });
-        });
+        supabase.auth.exchangeCodeForSession(code)
+          .finally(() => navigate('/reset-password', { replace: true }));
       } else {
         navigate('/reset-password', { replace: true });
       }
       return;
     }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') navigate('/reset-password', { replace: true });
     });

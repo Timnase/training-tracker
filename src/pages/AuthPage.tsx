@@ -22,6 +22,8 @@ export function AuthPage() {
     setLoading(true);
 
     if (mode === 'forgot') {
+      // redirectTo is unused — the email template links directly with token_hash.
+      // Kept here as a fallback in case template is not yet updated.
       const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: 'https://timnase.github.io/training-tracker/?recovery=1',
       });

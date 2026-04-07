@@ -11,19 +11,34 @@ export function ResetPasswordPage() {
   const [error,    setError]    = useState('');
   const [loading,  setLoading]  = useState(false);
 
-  // Wait for PKCE code exchange to complete and session to be available
+  // Wait for the recovery session to be available.
+  // The PasswordRecoveryListener in App.tsx now exchanges the PKCE code before
+  // navigating here, so getSession() should resolve immediately in most cases.
+  // The onAuthStateChange listener acts as a fallback for any remaining timing edge cases.
   useEffect(() => {
-    const check = async () => {
-      // Poll until session is ready (PKCE exchange happens async)
-      for (let i = 0; i < 20; i++) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) { setReady(true); return; }
-        await new Promise(r => setTimeout(r, 300));
+    let done = false;
+    const finish = () => { if (!done) { done = true; setReady(true); } };
+
+    // Check immediately — code exchange likely already completed
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) finish();
+    });
+
+    // Fallback: listen for the auth event in case exchange is still in flight
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) finish();
+    });
+
+    // Last-resort timeout after 15 seconds
+    const timeout = setTimeout(() => {
+      if (!done) {
+        done = true;
+        setError('Link expired or already used. Please request a new reset email.');
+        setReady(true);
       }
-      setError('Link expired or already used. Please request a new reset email.');
-      setReady(true);
-    };
-    check();
+    }, 15000);
+
+    return () => { subscription.unsubscribe(); clearTimeout(timeout); };
   }, []);
 
   const submit = async () => {

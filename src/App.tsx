@@ -47,7 +47,17 @@ function PasswordRecoveryListener() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('recovery') === '1') {
-      navigate('/reset-password', { replace: true });
+      const code = params.get('code');
+      if (code) {
+        // Exchange the PKCE code FIRST so the session is ready before we navigate.
+        // Previously we navigated immediately, creating a race condition where the
+        // 6-second poll on ResetPasswordPage timed out before the exchange completed.
+        supabase.auth.exchangeCodeForSession(code).finally(() => {
+          navigate('/reset-password', { replace: true });
+        });
+      } else {
+        navigate('/reset-password', { replace: true });
+      }
       return;
     }
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {

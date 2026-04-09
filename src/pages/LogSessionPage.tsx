@@ -103,20 +103,48 @@ function RestTimer() {
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
-  // Must be called inside a tap handler so iOS allows future .play() calls
+  // Must be called inside a tap handler so iOS allows future .play() calls.
+  // We play silently at volume=0 so the element is unlocked but audio session
+  // is not yet requested — pausing immediately after prevents iOS from taking
+  // over the playback session and interrupting background music.
   const unlockAudio = () => {
     if (!BEEP_URL) return;
     const a = new Audio(BEEP_URL);
-    a.volume = 0; // completely silent — just unlocks the element on iOS
-    a.play().catch(() => {});
+    a.volume = 0;
+    const p = a.play();
+    if (p) p.then(() => a.pause()).catch(() => {});
     audioRef.current = a;
   };
 
   const playBeep = () => {
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = 0;
-    audioRef.current.volume = 1;
-    audioRef.current.play().catch(() => {});
+    // Vibrate first (Android Chrome; iOS ignores this)
+    navigator.vibrate?.([200, 100, 200, 100, 400]);
+
+    if (!audioRef.current || !BEEP_URL) return;
+    const a = audioRef.current;
+    a.currentTime = 0;
+    a.volume = 1;
+    // Release the audio element once the beep finishes so iOS relinquishes
+    // its audio session and other apps can resume their music.
+    a.onended = () => { audioRef.current = null; };
+    a.play().catch(() => {});
+  };
+
+  // ── Service-worker notification helpers ──────────────────────────────────
+  const scheduleNotification = async (delayMs: number) => {
+    if (!('Notification' in window) || !navigator.serviceWorker) return;
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.ready;
+    reg.active?.postMessage({ type: 'SCHEDULE_NOTIFICATION', delayMs });
+  };
+
+  const cancelNotification = () => {
+    navigator.serviceWorker?.ready.then(reg =>
+      reg.active?.postMessage({ type: 'CANCEL_NOTIFICATION' }),
+    ).catch(() => {});
   };
 
   const start = (secs: number) => {
@@ -124,10 +152,12 @@ function RestTimer() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
+    scheduleNotification(secs * 1000).catch(() => {});
     intervalRef.current = setInterval(() => {
       const r = calcRemaining(end);
       if (r <= 0) {
         clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
+        cancelNotification();
         playBeep();
       } else setRemaining(r);
     }, 250); // poll 4× per second for accuracy
@@ -136,6 +166,7 @@ function RestTimer() {
   const stop = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     setEndTime(null); setRemaining(null);
+    cancelNotification();
   };
 
   // Re-sync when returning from background (background throttles intervals)
@@ -143,7 +174,7 @@ function RestTimer() {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) { stop(); playBeep(); } else setRemaining(r);
+        if (r <= 0) { cancelNotification(); stop(); playBeep(); } else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);

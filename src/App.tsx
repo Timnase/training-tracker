@@ -85,9 +85,11 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-slate-50 max-w-lg mx-auto flex flex-col">
-      <div className="flex-1 pb-20">{children}</div>
-      <BottomNav />
+    <div className="bg-slate-50 max-w-lg mx-auto flex flex-col" style={{ height: '100dvh' }}>
+      <div className="flex-1 overflow-y-auto pb-4">{children}</div>
+      <div className="flex-shrink-0">
+        <BottomNav />
+      </div>
     </div>
   );
 }

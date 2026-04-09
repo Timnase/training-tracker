@@ -92,9 +92,12 @@ export function DashboardPage() {
       date: new Date().toISOString(), startedAt: new Date().toISOString(),
       feeling: null, cardio: null, notes: '',
       exercises: wt.exercises.map(ex => ({
-        exerciseId: ex.id, exerciseName: ex.name,
-        sets: Array.from({ length: ex.defaultSets }, () => ({ weight: null, reps: null, difficulty: null })),
-        note: '',
+        exerciseId:      ex.id,
+        exerciseName:    ex.name,
+        sets:            Array.from({ length: ex.defaultSets }, () => ({ weight: null, reps: null, difficulty: null })),
+        note:            '',
+        isUnilateral:    ex.isUnilateral ?? false,
+        supersetGroupId: ex.supersetGroupId,
       })),
     });
     navigate('/log/session');
@@ -144,7 +147,7 @@ export function DashboardPage() {
           <p className="text-4xl mb-3">📋</p>
           <p className="font-bold text-slate-900 mb-1">No active plan</p>
           <p className="text-sm text-slate-500 mb-4">Create a workout plan to get started</p>
-          <Button onClick={() => navigate('/plans')}>Create a Plan</Button>
+          <Button onClick={() => navigate('/plans', { state: { openCreate: true } })}>Create a Plan</Button>
         </Card>
       )}
 

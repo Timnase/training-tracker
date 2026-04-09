@@ -7,8 +7,8 @@ import { Header } from '../components/layout/Header';
 import { Button } from '../components/ui/Button';
 import { Toggle } from '../components/ui/Toggle';
 import { Input, Textarea } from '../components/ui/Input';
-import { daysAgo } from '../utils';
-import type { Difficulty, Exercise, ExerciseLog, Feeling, SetLog } from '../types';
+import { daysAgo, groupExercises } from '../utils';
+import type { Difficulty, Exercise, ExerciseGroup, ExerciseLog, Feeling, SetLog } from '../types';
 
 // ─── Elapsed workout timer ────────────────────────────────────────────────────
 // Uses the absolute start timestamp so background throttling can't skew it.
@@ -92,45 +92,33 @@ const BEEP_URL = _makeBeepUrl();
 const PRESETS = [30, 60, 90, 120, 180];
 
 function RestTimer() {
-  const [endTime,   setEndTime]   = useState<number | null>(null); // absolute ms timestamp
-  const [total,     setTotal]     = useState(90);
-  const [remaining, setRemaining] = useState<number | null>(null);
-  const [custom,    setCustom]    = useState('');
-  const [selected,  setSelected]  = useState(90);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // HTML Audio element — unlocked (via silent play) inside the user's tap gesture
-  const audioRef    = useRef<HTMLAudioElement | null>(null);
+  const [endTime,    setEndTime]    = useState<number | null>(null); // absolute ms timestamp
+  const [total,      setTotal]      = useState(90);
+  const [remaining,  setRemaining]  = useState<number | null>(null);
+  const [finished,   setFinished]   = useState(false); // show "done" flash when returning from bg
+  const [selected,   setSelected]   = useState(90);
+  const [customMin,  setCustomMin]  = useState('');
+  const [customSec,  setCustomSec]  = useState('');
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Audio element — created lazily inside gesture handler so it's already unlocked for iOS
+  const audioRef     = useRef<HTMLAudioElement | null>(null);
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
-  // Must be called inside a tap handler so iOS allows future .play() calls.
-  // We play silently at volume=0 so the element is unlocked but audio session
-  // is not yet requested — pausing immediately after prevents iOS from taking
-  // over the playback session and interrupting background music.
-  const unlockAudio = () => {
-    if (!BEEP_URL) return;
-    const a = new Audio(BEEP_URL);
-    a.volume = 0;
-    const p = a.play();
-    if (p) p.then(() => a.pause()).catch(() => {});
-    audioRef.current = a;
-  };
-
   const playBeep = () => {
-    // Vibrate first (Android Chrome; iOS ignores this)
-    navigator.vibrate?.([200, 100, 200, 100, 400]);
-
-    if (!audioRef.current || !BEEP_URL) return;
+    // Vibrate — works reliably on Android/iOS regardless of audio focus
+    if ('vibrate' in navigator) navigator.vibrate([300, 100, 300]);
+    // Audio beep — may silently fail on iOS if gesture unlock wasn't granted
     const a = audioRef.current;
+    if (!a) return;
     a.currentTime = 0;
     a.volume = 1;
-    // Release the audio element once the beep finishes so iOS relinquishes
-    // its audio session and other apps can resume their music.
-    a.onended = () => { audioRef.current = null; };
     a.play().catch(() => {});
   };
 
   // ── Service-worker notification helpers ──────────────────────────────────
+  // Posts a message to the SW so it can fire a local notification even when
+  // the browser has throttled the page's JS (app in background).
   const scheduleNotification = async (delayMs: number) => {
     if (!('Notification' in window) || !navigator.serviceWorker) return;
     const permission = Notification.permission === 'granted'
@@ -148,8 +136,17 @@ function RestTimer() {
   };
 
   const start = (secs: number) => {
-    unlockAudio(); // inside tap handler — iOS gesture unlock
+    // Create and load (not play) the audio element inside the gesture so iOS allows
+    // future .play() calls — loading without playing avoids grabbing audio focus
+    // and interrupting background music from other apps.
+    if (BEEP_URL && !audioRef.current) {
+      const a = new Audio(BEEP_URL);
+      a.load();
+      audioRef.current = a;
+    }
+
     if (intervalRef.current) clearInterval(intervalRef.current);
+    setFinished(false);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
     scheduleNotification(secs * 1000).catch(() => {});
@@ -165,16 +162,16 @@ function RestTimer() {
 
   const stop = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    setEndTime(null); setRemaining(null);
+    setEndTime(null); setRemaining(null); setFinished(false);
     cancelNotification();
   };
 
-  // Re-sync when returning from background (background throttles intervals)
+  // Re-sync when returning from background (browser throttles intervals)
   useEffect(() => {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) { cancelNotification(); stop(); playBeep(); } else setRemaining(r);
+        if (r <= 0) { cancelNotification(); stop(); setFinished(true); playBeep(); } else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -182,6 +179,20 @@ function RestTimer() {
   }, [endTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
+
+  // ── Timer finished while app was in background ──
+  if (finished) {
+    return (
+      <div className="rounded-xl p-3 flex items-center gap-3 bg-easy-light border border-easy">
+        <span className="text-2xl">✅</span>
+        <div className="flex-1">
+          <p className="text-sm font-bold text-easy">Rest done!</p>
+          <p className="text-xs text-slate-500">Timer finished while you were away</p>
+        </div>
+        <button onClick={() => setFinished(false)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Dismiss</button>
+      </div>
+    );
+  }
 
   // ── Running ──
   if (remaining !== null) {
@@ -217,7 +228,10 @@ function RestTimer() {
     );
   }
 
-  // ── Idle: tap a preset to start instantly, or type custom ──
+  // ── Idle: tap a preset to start instantly, or enter custom min/sec ──
+  const customTotal = (parseInt(customMin) || 0) * 60 + (parseInt(customSec) || 0);
+  const hasCustom   = customTotal > 0;
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 text-center">Rest Timer — tap to start</p>
@@ -225,9 +239,9 @@ function RestTimer() {
         {PRESETS.map(p => (
           <button
             key={p}
-            onClick={() => { setSelected(p); setCustom(''); start(p); }}
+            onClick={() => { setSelected(p); setCustomMin(''); setCustomSec(''); start(p); }}
             className={`flex-1 py-2 rounded-lg text-xs font-bold border-2 transition-all active:scale-95
-              ${selected === p && !custom
+              ${selected === p && !hasCustom
                 ? 'border-primary-500 bg-primary-50 text-primary-600'
                 : 'border-slate-200 text-slate-500 hover:border-primary-300'}`}
           >
@@ -235,19 +249,29 @@ function RestTimer() {
           </button>
         ))}
       </div>
-      <div className="flex gap-2">
-        <input
-          type="number" min="5" max="600" placeholder="Custom sec"
-          value={custom}
-          onChange={e => { setCustom(e.target.value); if (e.target.value) setSelected(parseInt(e.target.value)); }}
-          className="flex-1 px-3 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
-        />
-        {custom && (
+      <div className="flex gap-2 items-center">
+        <div className="flex-1 flex gap-1 items-center">
+          <input
+            type="number" inputMode="numeric" min="0" max="59" placeholder="0"
+            value={customMin}
+            onChange={e => setCustomMin(e.target.value)}
+            className="w-full px-2 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
+          />
+          <span className="text-xs text-slate-400 font-semibold flex-shrink-0">min</span>
+          <input
+            type="number" inputMode="numeric" min="0" max="59" placeholder="0"
+            value={customSec}
+            onChange={e => setCustomSec(e.target.value)}
+            className="w-full px-2 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
+          />
+          <span className="text-xs text-slate-400 font-semibold flex-shrink-0">sec</span>
+        </div>
+        {hasCustom && (
           <button
-            onClick={() => start(parseInt(custom) || 90)}
-            className="px-4 py-1.5 rounded-xl bg-primary-500 text-white text-sm font-bold"
+            onClick={() => { setSelected(-1); start(customTotal); }}
+            className="px-3 py-1.5 rounded-xl bg-primary-500 text-white text-sm font-bold flex-shrink-0"
           >
-            ▶ {custom}s
+            ▶ {customMin ? `${customMin}m` : ''}{customSec ? `${customSec}s` : ''}
           </button>
         )}
       </div>
@@ -317,17 +341,24 @@ function DiffButton({ value, current, onChange }: { value: Difficulty; current: 
 // ─── Set row ──────────────────────────────────────────────────────────────────
 
 interface SetRowProps {
-  index:    number;
-  set:      SetLog;
-  lastSet:  SetLog | null;
-  onUpdate: (patch: Partial<SetLog>) => void;
-  onRemove: () => void;
+  index:        number;
+  set:          SetLog;
+  lastSet:      SetLog | null;
+  onUpdate:     (patch: Partial<SetLog>) => void;
+  onRemove:     () => void;
+  isUnilateral?: boolean;
 }
 
-function SetRow({ index, set, lastSet, onUpdate, onRemove }: SetRowProps) {
+function SetRow({ index, set, lastSet, onUpdate, onRemove, isUnilateral }: SetRowProps) {
+  // For unilateral exercises: even index = Left, odd index = Right
+  const sideLabel = isUnilateral ? (index % 2 === 0 ? 'L' : 'R') : String(index + 1);
+  const sideColor = isUnilateral
+    ? (index % 2 === 0 ? 'text-blue-500' : 'text-orange-500')
+    : 'text-slate-400';
+
   return (
     <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1.5 items-center mb-2">
-      <span className="text-xs font-bold text-slate-400 text-center">{index + 1}</span>
+      <span className={`text-xs font-bold text-center ${sideColor}`}>{sideLabel}</span>
 
       <input
         type="number" inputMode="decimal"
@@ -372,8 +403,9 @@ interface ExerciseBlockProps {
 }
 
 function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange }: ExerciseBlockProps) {
-  const lastWo = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
+  const lastWo  = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
   const lastLog = lastWo?.exercises.find(e => e.exerciseId === exercise.id) ?? null;
+  const isUnilateral = log.isUnilateral ?? exercise.isUnilateral ?? false;
 
   const lastPerfText = lastLog?.sets.length
     ? lastLog.sets.map((s, i) => `S${i + 1}: ${s.weight ? s.weight + 'kg × ' : ''}${s.reps ?? '?'}${s.difficulty ? ` (${s.difficulty})` : ''}`).join(' · ')
@@ -381,14 +413,19 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
 
   return (
     <div className="py-3 px-4">
-      <p className="font-bold text-slate-900">{exercise.name}</p>
+      <div className="flex items-center gap-2 mb-0.5">
+        <p className="font-bold text-slate-900">{exercise.name}</p>
+        {isUnilateral && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-wide">L/R</span>
+        )}
+      </div>
       <p className="text-xs text-slate-400 mt-0.5 mb-3">
         {lastWo ? `📅 ${daysAgo(lastWo.date)} · ` : ''}{lastPerfText}
       </p>
 
       {/* Column labels */}
       <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1.5 mb-1">
-        {['', 'kg', 'reps', 'feel', ''].map((l, i) => (
+        {[isUnilateral ? 'side' : '', 'kg', 'reps', 'feel', ''].map((l, i) => (
           <span key={i} className="text-[10px] font-bold uppercase text-slate-400 text-center">{l}</span>
         ))}
       </div>
@@ -401,11 +438,16 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
           lastSet={lastLog?.sets[i] ?? null}
           onUpdate={patch => onUpdateSet(i, patch)}
           onRemove={() => onRemoveSet(i)}
+          isUnilateral={isUnilateral}
         />
       ))}
 
-      <Button variant="ghost" size="sm" fullWidth onClick={onAddSet} className="mt-1">
-        + Add Set
+      <Button
+        variant="ghost" size="sm" fullWidth
+        onClick={isUnilateral ? () => { onAddSet(); onAddSet(); } : onAddSet}
+        className="mt-1"
+      >
+        {isUnilateral ? '+ Add Round (L+R)' : '+ Add Set'}
       </Button>
       <Input
         className="mt-3 text-sm py-2"
@@ -440,13 +482,14 @@ export function LogSessionPage() {
     return null;
   }
 
-  // We need the plan's exercise objects for grouping — reconstruct from the log
+  // Reconstruct Exercise objects from the log for grouping
   const exercisesForGrouping: Exercise[] = workout.exercises.map(e => ({
-    id:             e.exerciseId,
-    name:           e.exerciseName,
-    defaultSets:    e.sets.length,
-    defaultReps:    '',
-    supersetGroupId: null, // grouping not critical here; just show individually
+    id:              e.exerciseId,
+    name:            e.exerciseName,
+    defaultSets:     e.sets.length,
+    defaultReps:     '',
+    supersetGroupId: e.supersetGroupId ?? null,
+    isUnilateral:    e.isUnilateral ?? false,
   }));
 
   const finish = async () => {
@@ -518,19 +561,48 @@ export function LogSessionPage() {
         <section>
           <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">Exercises</p>
           <div className="space-y-3">
-            {workout.exercises.map(log => (
-              <div key={log.exerciseId} className="bg-white rounded-2xl shadow-sm">
-                <ExerciseBlock
-                  exercise={exercisesForGrouping.find(e => e.id === log.exerciseId)!}
-                  log={log}
-                  allWorkouts={allWorkouts}
-                  onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
-                  onAddSet={() => addSet(log.exerciseId)}
-                  onRemoveSet={i => removeSet(log.exerciseId, i)}
-                  onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
-                />
-              </div>
-            ))}
+            {groupExercises(exercisesForGrouping).map((group: ExerciseGroup, gi: number) => {
+              if (group.type === 'superset') {
+                return (
+                  <div key={gi} className="border-2 border-primary-500 rounded-2xl overflow-hidden">
+                    <div className="bg-primary-50 px-4 py-1.5">
+                      <span className="text-xs font-bold uppercase tracking-wider text-primary-500">⚡ Superset</span>
+                    </div>
+                    {group.exercises.map((ex, ei) => {
+                      const log = workout.exercises.find(l => l.exerciseId === ex.id)!;
+                      return (
+                        <div key={ex.id} className={ei < group.exercises.length - 1 ? 'border-b border-primary-200' : ''}>
+                          <ExerciseBlock
+                            exercise={ex}
+                            log={log}
+                            allWorkouts={allWorkouts}
+                            onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
+                            onAddSet={() => addSet(log.exerciseId)}
+                            onRemoveSet={i => removeSet(log.exerciseId, i)}
+                            onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              const ex  = group.exercises[0];
+              const log = workout.exercises.find(l => l.exerciseId === ex.id)!;
+              return (
+                <div key={gi} className="bg-white rounded-2xl shadow-sm">
+                  <ExerciseBlock
+                    exercise={ex}
+                    log={log}
+                    allWorkouts={allWorkouts}
+                    onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
+                    onAddSet={() => addSet(log.exerciseId)}
+                    onRemoveSet={i => removeSet(log.exerciseId, i)}
+                    onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
+                  />
+                </div>
+              );
+            })}
           </div>
         </section>
 

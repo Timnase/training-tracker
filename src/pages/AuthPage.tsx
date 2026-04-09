@@ -4,12 +4,28 @@ import { ProfileService } from '../services/profile.service';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 
+function EyeIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+
 type Mode = 'login' | 'signup' | 'forgot';
 
 export function AuthPage() {
   const [mode,        setMode]        = useState<Mode>('login');
   const [email,       setEmail]       = useState('');
   const [password,    setPassword]    = useState('');
+  const [showPw,      setShowPw]      = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [error,       setError]       = useState('');
   const [success,     setSuccess]     = useState('');
@@ -78,15 +94,28 @@ export function AuthPage() {
           />
 
           {mode !== 'forgot' && (
-            <Input
-              label="Password"
-              type="password"
-              placeholder="••••••••"
-              autoComplete="current-password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && submit()}
-            />
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-500">Password</label>
+              <div className="relative">
+                <input
+                  type={showPw ? 'text' : 'password'}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && submit()}
+                  className="w-full px-3.5 py-2.5 pr-11 border border-slate-200 rounded-xl text-[15px] text-slate-900 bg-white focus:outline-none focus:border-primary-500 transition-colors placeholder:text-slate-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(v => !v)}
+                  className="absolute inset-y-0 right-3 flex items-center text-slate-400 hover:text-slate-600"
+                  tabIndex={-1}
+                >
+                  <EyeIcon open={showPw} />
+                </button>
+              </div>
+            </div>
           )}
 
           {mode === 'signup' && (

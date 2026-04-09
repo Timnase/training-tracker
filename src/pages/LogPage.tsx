@@ -67,10 +67,12 @@ export function LogPage() {
       cardio:              null,
       notes:               '',
       exercises:           wt.exercises.map(ex => ({
-        exerciseId:   ex.id,
-        exerciseName: ex.name,
-        sets:         Array.from({ length: ex.defaultSets }, () => ({ weight: null, reps: null, difficulty: null })),
-        note:         '',
+        exerciseId:      ex.id,
+        exerciseName:    ex.name,
+        sets:            Array.from({ length: ex.defaultSets }, () => ({ weight: null, reps: null, difficulty: null })),
+        note:            '',
+        isUnilateral:    ex.isUnilateral ?? false,
+        supersetGroupId: ex.supersetGroupId,
       })),
     };
     setWorkout(newWorkout);

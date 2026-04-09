@@ -7,6 +7,7 @@ import { Input } from '../components/ui/Input';
 import { Modal } from '../components/Modal';
 import { Header, HeaderAddButton } from '../components/layout/Header';
 import { groupExercises, uid } from '../utils';
+import { Toggle } from '../components/ui/Toggle';
 import type { Exercise, Plan } from '../types';
 
 interface ExerciseFormState {
@@ -14,9 +15,10 @@ interface ExerciseFormState {
   defaultSets:  string;
   defaultReps:  string;
   supersetWith: string; // exercise id to group with, or ''
+  isUnilateral: boolean;
 }
 
-const DEFAULT_FORM: ExerciseFormState = { name: '', defaultSets: '3', defaultReps: '8-12', supersetWith: '' };
+const DEFAULT_FORM: ExerciseFormState = { name: '', defaultSets: '3', defaultReps: '8-12', supersetWith: '', isUnilateral: false };
 
 export function WorkoutEditPage() {
   const { planId, workoutId } = useParams<{ planId: string; workoutId: string }>();
@@ -46,13 +48,13 @@ export function WorkoutEditPage() {
 
   const openEdit = (ex: Exercise) => {
     setEditingId(ex.id);
-    setForm({ name: ex.name, defaultSets: String(ex.defaultSets), defaultReps: ex.defaultReps, supersetWith: '' });
+    setForm({ name: ex.name, defaultSets: String(ex.defaultSets), defaultReps: ex.defaultReps, supersetWith: '', isUnilateral: ex.isUnilateral ?? false });
     setShowModal(true);
   };
 
   const saveExercise = () => {
     if (!form.name.trim()) return;
-    const base = { name: form.name.trim(), defaultSets: parseInt(form.defaultSets) || 3, defaultReps: form.defaultReps || '8-12' };
+    const base = { name: form.name.trim(), defaultSets: parseInt(form.defaultSets) || 3, defaultReps: form.defaultReps || '8-12', isUnilateral: form.isUnilateral };
 
     if (editingId) {
       // Editing existing — just update name/sets/reps (superset managed separately)
@@ -174,6 +176,11 @@ export function WorkoutEditPage() {
               <Input label="Default Sets" type="number" min="1" value={form.defaultSets} onChange={e => setForm(f => ({ ...f, defaultSets: e.target.value }))} />
               <Input label="Default Reps" placeholder="8-12" value={form.defaultReps} onChange={e => setForm(f => ({ ...f, defaultReps: e.target.value }))} />
             </div>
+            <Toggle
+              label="One-sided exercise (tracks L &amp; R separately)"
+              checked={form.isUnilateral}
+              onChange={v => setForm(f => ({ ...f, isUnilateral: v }))}
+            />
 
             {/* ── Superset section ── */}
             {editingId ? (

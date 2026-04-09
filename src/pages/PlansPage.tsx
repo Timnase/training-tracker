@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { usePlans, useUpsertPlan } from '../hooks/usePlans';
 import { useActivePlanId, useSetActivePlanId } from '../hooks/useSettings';
 import { Spinner } from '../components/ui/Spinner';
@@ -11,12 +11,22 @@ import { uid } from '../utils';
 
 export function PlansPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { data: plans = [],   isLoading } = usePlans();
   const { data: activePlanId }            = useActivePlanId();
   const upsertPlan                        = useUpsertPlan();
-const setActivePlan                     = useSetActivePlanId();
+  const setActivePlan                     = useSetActivePlanId();
   const [showModal, setShowModal]         = useState(false);
   const [newName,   setNewName]           = useState('');
+
+  // Auto-open create modal when navigated here with openCreate state (e.g. from Dashboard)
+  useEffect(() => {
+    if ((location.state as { openCreate?: boolean } | null)?.openCreate) {
+      setShowModal(true);
+      // Clear the state so refreshing doesn't re-open
+      window.history.replaceState({}, '');
+    }
+  }, [location.state]);
 
   const createPlan = async () => {
     if (!newName.trim()) return;

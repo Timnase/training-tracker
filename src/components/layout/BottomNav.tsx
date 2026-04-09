@@ -32,7 +32,7 @@ const links = [
 
 export function BottomNav() {
   return (
-    <nav className="flex items-start pt-2 bg-white border-t border-slate-100 safe-bottom">
+    <nav className="relative overflow-visible flex items-start pt-2 bg-white border-t border-slate-100 safe-bottom">
       {links.map(link => { const { to, label, icon } = link; const isLog = 'isLog' in link && link.isLog; return (
         <NavLink
           key={to}
@@ -40,7 +40,7 @@ export function BottomNav() {
           end={to === '/'}
           className={({ isActive }) => cn(
             'flex-1 flex flex-col items-center gap-1 pb-2 text-[11px] font-medium transition-colors',
-            isLog ? '-mt-4' : '',
+            isLog ? '-mt-4 z-10 relative' : '',
             !isLog && (isActive ? 'text-primary-500' : 'text-slate-400'),
           )}
         >

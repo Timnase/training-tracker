@@ -12,8 +12,10 @@ export function Header({ title, showBack, backTo, action }: HeaderProps) {
 
   return (
     <header className="h-[60px] bg-white border-b border-slate-100 flex-shrink-0">
-      <div className="flex items-center justify-between h-full px-4">
-        <div className="w-9">
+      {/* grid-cols-[auto_1fr_auto] so the centre title is always truly centred
+          regardless of how many buttons are in the left/right slots */}
+      <div className="grid grid-cols-[auto_1fr_auto] items-center h-full px-4 gap-2">
+        <div className="flex items-center">
           {showBack && (
             <button
               onClick={() => backTo ? navigate(backTo) : navigate(-1)}
@@ -26,9 +28,9 @@ export function Header({ title, showBack, backTo, action }: HeaderProps) {
           )}
         </div>
 
-        <h1 className="text-[17px] font-bold text-slate-900">{title}</h1>
+        <h1 className="text-[17px] font-bold text-slate-900 text-center truncate">{title}</h1>
 
-        <div className="w-9">
+        <div className="flex items-center justify-end gap-1">
           {action}
         </div>
       </div>

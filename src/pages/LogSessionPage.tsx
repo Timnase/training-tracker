@@ -116,6 +116,25 @@ function RestTimer() {
     a.play().catch(() => {});
   };
 
+  // ── Service-worker notification helpers ──────────────────────────────────
+  // Posts a message to the SW so it can fire a local notification even when
+  // the browser has throttled the page's JS (app in background).
+  const scheduleNotification = async (delayMs: number) => {
+    if (!('Notification' in window) || !navigator.serviceWorker) return;
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.ready;
+    reg.active?.postMessage({ type: 'SCHEDULE_NOTIFICATION', delayMs });
+  };
+
+  const cancelNotification = () => {
+    navigator.serviceWorker?.ready.then(reg =>
+      reg.active?.postMessage({ type: 'CANCEL_NOTIFICATION' }),
+    ).catch(() => {});
+  };
+
   const start = (secs: number) => {
     // Create and load (not play) the audio element inside the gesture so iOS allows
     // future .play() calls — loading without playing avoids grabbing audio focus
@@ -130,10 +149,12 @@ function RestTimer() {
     setFinished(false);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
+    scheduleNotification(secs * 1000).catch(() => {});
     intervalRef.current = setInterval(() => {
       const r = calcRemaining(end);
       if (r <= 0) {
         clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
+        cancelNotification();
         playBeep();
       } else setRemaining(r);
     }, 250); // poll 4× per second for accuracy
@@ -142,6 +163,7 @@ function RestTimer() {
   const stop = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     setEndTime(null); setRemaining(null); setFinished(false);
+    cancelNotification();
   };
 
   // Re-sync when returning from background (browser throttles intervals)
@@ -149,7 +171,7 @@ function RestTimer() {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) { stop(); setFinished(true); playBeep(); } else setRemaining(r);
+        if (r <= 0) { cancelNotification(); stop(); setFinished(true); playBeep(); } else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);

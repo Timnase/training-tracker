@@ -6,6 +6,7 @@ export interface Exercise {
   defaultSets: number;
   defaultReps: string;
   supersetGroupId: string | null;
+  isUnilateral?: boolean; // e.g. lunges — tracks left and right sides separately
 }
 
 export interface WorkoutTemplate {
@@ -32,10 +33,12 @@ export interface SetLog {
 }
 
 export interface ExerciseLog {
-  exerciseId:   string;
-  exerciseName: string;
-  sets:         SetLog[];
-  note:         string;
+  exerciseId:      string;
+  exerciseName:    string;
+  sets:            SetLog[];
+  note:            string;
+  isUnilateral?:   boolean;       // copied from Exercise at workout start
+  supersetGroupId?: string | null; // copied from Exercise at workout start
 }
 
 export interface Cardio {

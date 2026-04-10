@@ -11,18 +11,6 @@ import { uid } from '../utils';
 import type { Plan, WorkoutTemplate } from '../types';
 
 // ─── Plan file parser ─────────────────────────────────────────────────────────
-//
-// Supports two formats:
-//
-// 1. Plain-text (.txt)  — human-writable, one plan per file:
-//
-//    My 3-Day Split
-//
-//    Push Day
-//    Bench Press 4x8-12
-//    ...
-//
-// 2. JSON (.json) — the app's own export format
 
 type ParsedPlan = Omit<Plan, 'id'>;
 
@@ -92,6 +80,66 @@ function parsePlanFile(text: string, fileName: string): ParsedPlan | null {
   return parseTextPlan(text);
 }
 
+// ─── Image → plan via Claude Vision ──────────────────────────────────────────
+// Requires VITE_CLAUDE_API_KEY to be set in .env.local
+// Uses anthropic-dangerous-direct-browser-access header for direct browser calls
+
+const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY as string | undefined;
+
+const IMAGE_PROMPT = `You are a workout plan extractor. Look at this image and extract any workout plan data you can see.
+
+Return ONLY plain text in this exact format (no markdown, no explanation):
+
+Plan Name Here
+
+Workout Day Name
+Exercise Name 4x8-12
+Exercise Name 3x10
+Another Exercise 3x12
+
+Another Day Name
+Exercise Name 4x6
+
+Rules:
+- First line: plan name (infer from context, e.g. the heading or title)
+- Workout section headers are plain text lines with no "NxReps" pattern
+- Each exercise line must be: "Exercise Name SetsxReps" e.g. "Bench Press 4x8"
+- If sets/reps are not visible, use 3x10 as a default
+- Skip warm-ups, cool-downs, and non-exercise text
+
+If no workout plan is found in the image, respond with exactly: NO_PLAN_FOUND`;
+
+async function extractPlanFromImage(base64: string, mimeType: string): Promise<ParsedPlan | null> {
+  if (!CLAUDE_API_KEY) throw new Error('NO_API_KEY');
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': CLAUDE_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-6',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+          { type: 'text',  text: IMAGE_PROMPT },
+        ],
+      }],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
+  const json = await res.json() as { content: { type: string; text: string }[] };
+  const text = json.content.find(c => c.type === 'text')?.text ?? '';
+  if (text.trim() === 'NO_PLAN_FOUND') return null;
+  return parseTextPlan(text);
+}
+
 // ─── Format guide modal ───────────────────────────────────────────────────────
 
 function FormatGuideModal({ onClose }: { onClose: () => void }) {
@@ -143,6 +191,11 @@ export function PlansPage() {
   // ── Format guide modal ──
   const [showFormatGuide, setShowFormatGuide] = useState(false);
 
+  // ── Image scan ──
+  const imageFileRef                    = useRef<HTMLInputElement>(null);
+  const [imageScanning, setImageScanning] = useState(false);
+  const [imageError,    setImageError]    = useState('');
+
   // Auto-open create modal when navigated here with openCreate state
   useEffect(() => {
     if ((location.state as { openCreate?: boolean } | null)?.openCreate) {
@@ -189,16 +242,47 @@ export function PlansPage() {
 
   const totalExercises = parsedPlan?.workouts.reduce((n, w) => n + w.exercises.length, 0) ?? 0;
 
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setImageError('');
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const dataUrl = ev.target?.result as string;
+      // dataUrl = "data:<mimeType>;base64,<data>"
+      const [meta, base64] = dataUrl.split(',');
+      const mimeType = meta.replace('data:', '').replace(';base64', '') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+      setImageScanning(true);
+      try {
+        const plan = await extractPlanFromImage(base64, mimeType);
+        if (!plan) { setImageError('No workout plan detected in this image. Try a clearer screenshot.'); return; }
+        setParsedPlan(plan); setImportName(plan.name); setImportSaved(false); setShowImportModal(true);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        if (msg === 'NO_API_KEY') {
+          setImageError('Add your Claude API key as VITE_CLAUDE_API_KEY in .env.local to enable image scanning.');
+        } else {
+          setImageError(`Image scan failed: ${msg}`);
+        }
+      } finally {
+        setImageScanning(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   return (
     <>
       <Header title="My Plans" />
 
-      {/* Hidden file input */}
+      {/* Hidden file inputs */}
       <input ref={importFileRef} type="file" accept=".txt,.json" className="hidden" onChange={handleFileChange} />
+      <input ref={imageFileRef}  type="file" accept="image/*"    className="hidden" onChange={handleImageChange} />
 
       <div className="p-4 pb-2">
-        {importError && (
-          <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-xl mb-4">{importError}</p>
+        {(importError || imageError) && (
+          <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-xl mb-4">{importError || imageError}</p>
         )}
 
         {isLoading ? (
@@ -242,52 +326,86 @@ export function PlansPage() {
       </div>
 
       {/* ── Sticky action bar ─────────────────────────────────────────────── */}
-      <div className="sticky bottom-0 bg-white border-t border-slate-100 px-4 py-3 grid grid-cols-2 gap-2.5">
+      <div className="sticky bottom-0 bg-white border-t border-slate-100 px-4 py-3 space-y-2.5">
 
-        {/* Create new plan */}
-        <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-primary-500 text-white shadow-sm active:scale-[0.97] transition-transform"
-        >
-          <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </div>
-          <div className="text-left">
-            <p className="text-sm font-bold leading-tight">Create new</p>
-            <p className="text-[11px] text-primary-200 leading-tight mt-0.5">Start from scratch</p>
-          </div>
-        </button>
-
-        {/* Load plan from file + ? badge */}
-        <div className="relative">
+        {/* Row 1: Create new  +  Load from file */}
+        <div className="grid grid-cols-2 gap-2.5">
+          {/* Create new plan */}
           <button
-            onClick={openImportPicker}
-            className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform"
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-primary-500 text-white shadow-sm active:scale-[0.97] transition-transform"
           >
-            <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
+            <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
               </svg>
             </div>
             <div className="text-left">
-              <p className="text-sm font-bold leading-tight">Load from file</p>
-              <p className="text-[11px] text-primary-400 leading-tight mt-0.5">.txt or .json</p>
+              <p className="text-sm font-bold leading-tight">Create new</p>
+              <p className="text-[11px] text-primary-200 leading-tight mt-0.5">Start from scratch</p>
             </div>
           </button>
 
-          {/* ? format guide badge */}
-          <button
-            onClick={e => { e.stopPropagation(); setShowFormatGuide(true); }}
-            title="Show file format guide"
-            className="absolute -top-2.5 -right-2.5 w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 text-[11px] font-bold flex items-center justify-center shadow-sm transition-colors z-10"
-          >
-            ?
-          </button>
+          {/* Load plan from file + ? badge */}
+          <div className="relative">
+            <button
+              onClick={openImportPicker}
+              className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform"
+            >
+              <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold leading-tight">Load from file</p>
+                <p className="text-[11px] text-primary-400 leading-tight mt-0.5">.txt or .json</p>
+              </div>
+            </button>
+            {/* ? format guide badge */}
+            <button
+              onClick={e => { e.stopPropagation(); setShowFormatGuide(true); }}
+              title="Show file format guide"
+              className="absolute -top-2.5 -right-2.5 w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 text-[11px] font-bold flex items-center justify-center shadow-sm transition-colors z-10"
+            >?</button>
+          </div>
         </div>
+
+        {/* Row 2: Scan image (full width, secondary) */}
+        <button
+          onClick={() => { setImageError(''); imageFileRef.current?.click(); }}
+          disabled={imageScanning}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl border-2 border-dashed border-slate-300 text-slate-500 hover:border-primary-400 hover:text-primary-600 transition-colors active:scale-[0.98] disabled:opacity-60"
+        >
+          {imageScanning ? (
+            <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center">
+              <svg className="animate-spin w-5 h-5 text-primary-500" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+            </div>
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+                <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+            </div>
+          )}
+          <div className="text-left">
+            <p className="text-sm font-semibold leading-tight">
+              {imageScanning ? 'Scanning image…' : 'Scan image'}
+            </p>
+            <p className="text-[11px] leading-tight mt-0.5 text-slate-400">
+              {imageScanning ? 'Claude AI is reading your screenshot' : 'Extract plan from a screenshot · requires API key'}
+            </p>
+          </div>
+          {!imageScanning && (
+            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 uppercase tracking-wide flex-shrink-0">AI</span>
+          )}
+        </button>
       </div>
 
       {/* ── Create plan modal ── */}

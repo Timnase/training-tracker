@@ -6,7 +6,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Modal } from '../components/Modal';
-import { Header, HeaderAddButton } from '../components/layout/Header';
+import { Header } from '../components/layout/Header';
 import { uid } from '../utils';
 import type { Plan, WorkoutTemplate } from '../types';
 
@@ -20,71 +20,65 @@ import type { Plan, WorkoutTemplate } from '../types';
 //
 //    Push Day
 //    Bench Press 4x8-12
-//    Overhead Press 3x10
-//    Tricep Pushdown 3x12-15
+//    ...
 //
-//    Pull Day
-//    Deadlift 4x5
-//    Pull-up 3x8
-//
-//    Legs
-//    Squat 4x6-8
-//    Romanian Deadlift 3x10
-//
-//    Rules:
-//    • First non-empty line → plan name
-//    • Lines matching "Name NxReps" → exercises added to the current workout
-//    • Any other non-empty line → starts a new workout section
-//
-// 2. JSON (.json) — the app's own export format (single plan or full backup)
+// 2. JSON (.json) — the app's own export format
 
 type ParsedPlan = Omit<Plan, 'id'>;
 
-function parseTextPlan(text: string): ParsedPlan {
-  const lines  = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const planName = lines[0] ?? 'Imported Plan';
+const EXAMPLE_PLAN_TEXT = `My 3-Day Split
 
+Push Day
+Bench Press 4x8-12
+Overhead Press 3x10
+Lateral Raise 3x15
+Tricep Pushdown 3x12-15
+
+Pull Day
+Deadlift 4x5
+Pull-up 3x8-12
+Barbell Row 3x8
+Bicep Curl 3x10
+
+Legs
+Squat 4x6-8
+Romanian Deadlift 3x10
+Leg Press 3x12-15
+Calf Raise 4x20`;
+
+function parseTextPlan(text: string): ParsedPlan {
+  const lines    = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const planName = lines[0] ?? 'Imported Plan';
   const workouts: WorkoutTemplate[] = [];
   let   current: WorkoutTemplate | null = null;
-
-  // "Bench Press 4x8-12"  or  "Squat 4×6"
   const exerciseRe = /^(.+?)\s+(\d+)[x×](\S+)\s*$/i;
 
   for (let i = 1; i < lines.length; i++) {
     const line  = lines[i];
     const match = line.match(exerciseRe);
-
     if (match) {
-      // Exercise line — lazy-create a workout if none exists yet
       if (!current) {
         current = { id: uid(), name: 'Workout', exercises: [] };
         workouts.push(current);
       }
       current.exercises.push({
-        id:              uid(),
-        name:            match[1].trim(),
-        defaultSets:     parseInt(match[2]) || 3,
-        defaultReps:     match[3],
+        id: uid(), name: match[1].trim(),
+        defaultSets: parseInt(match[2]) || 3, defaultReps: match[3],
         supersetGroupId: null,
       });
     } else {
-      // Workout section header
       current = { id: uid(), name: line, exercises: [] };
       workouts.push(current);
     }
   }
-
   return { name: planName, workouts };
 }
 
 function parseJsonPlan(text: string): ParsedPlan | null {
   try {
     const data = JSON.parse(text) as Record<string, unknown>;
-    // Single plan: { name, workouts }
-    if (typeof data.name === 'string' && Array.isArray(data.workouts)) {
+    if (typeof data.name === 'string' && Array.isArray(data.workouts))
       return { name: data.name, workouts: data.workouts as WorkoutTemplate[] };
-    }
-    // Full backup: { plans: [...] } — import the first plan
     if (Array.isArray((data as { plans?: unknown[] }).plans) && (data as { plans: unknown[] }).plans.length > 0) {
       const first = (data as { plans: Plan[] }).plans[0];
       return { name: first.name, workouts: first.workouts };
@@ -94,10 +88,34 @@ function parseJsonPlan(text: string): ParsedPlan | null {
 }
 
 function parsePlanFile(text: string, fileName: string): ParsedPlan | null {
-  if (fileName.toLowerCase().endsWith('.json')) {
-    return parseJsonPlan(text);
-  }
+  if (fileName.toLowerCase().endsWith('.json')) return parseJsonPlan(text);
   return parseTextPlan(text);
+}
+
+// ─── Format guide modal ───────────────────────────────────────────────────────
+
+function FormatGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal title="File Format Guide" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">
+          Create a <code className="bg-slate-100 px-1 rounded text-xs">.txt</code> file
+          with this structure and tap <strong>Load from file</strong>:
+        </p>
+        <pre className="bg-slate-50 rounded-xl p-4 text-[12px] font-mono whitespace-pre-wrap text-slate-700 leading-relaxed border border-slate-200">
+          {EXAMPLE_PLAN_TEXT}
+        </pre>
+        <ul className="space-y-1.5 text-xs text-slate-500">
+          <li>• <span className="font-semibold text-slate-700">First line</span> → plan name</li>
+          <li>• <span className="font-semibold text-slate-700">Section headings</span> (no <code className="bg-slate-100 px-0.5 rounded">NxReps</code>) → workout names</li>
+          <li>• <span className="font-semibold text-slate-700">Exercise lines</span> use <code className="bg-slate-100 px-0.5 rounded">Name NxReps</code> format, e.g. <code className="bg-slate-100 px-0.5 rounded">Squat 4x8</code></li>
+        </ul>
+        <p className="text-xs text-slate-400">
+          Also accepts <code className="bg-slate-100 px-0.5 rounded">.json</code> files exported from this app.
+        </p>
+      </div>
+    </Modal>
+  );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -122,7 +140,10 @@ export function PlansPage() {
   const [importError,     setImportError]     = useState('');
   const [importSaved,     setImportSaved]     = useState(false);
 
-  // Auto-open create modal when navigated here with openCreate state (e.g. from Dashboard)
+  // ── Format guide modal ──
+  const [showFormatGuide, setShowFormatGuide] = useState(false);
+
+  // Auto-open create modal when navigated here with openCreate state
   useEffect(() => {
     if ((location.state as { openCreate?: boolean } | null)?.openCreate) {
       setShowModal(true);
@@ -141,11 +162,7 @@ export function PlansPage() {
   };
 
   // ── Import handlers ──
-
-  const openImportPicker = () => {
-    setImportError('');
-    importFileRef.current?.click();
-  };
+  const openImportPicker = () => { setImportError(''); importFileRef.current?.click(); };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -154,18 +171,11 @@ export function PlansPage() {
     reader.onload = ev => {
       const text = ev.target?.result as string;
       const plan = parsePlanFile(text, file.name);
-      if (!plan) {
-        setImportError('Could not read this file. Check the format and try again.');
-        return;
-      }
-      setParsedPlan(plan);
-      setImportName(plan.name);
-      setImportError('');
-      setImportSaved(false);
-      setShowImportModal(true);
+      if (!plan) { setImportError('Could not read this file. Check the format and try again.'); return; }
+      setParsedPlan(plan); setImportName(plan.name); setImportError(''); setImportSaved(false); setShowImportModal(true);
     };
     reader.readAsText(file);
-    e.target.value = ''; // allow re-selecting same file
+    e.target.value = '';
   };
 
   const confirmImport = async () => {
@@ -174,61 +184,30 @@ export function PlansPage() {
     await upsertPlan.mutateAsync(plan);
     if (!activePlanId) await setActivePlan.mutateAsync(plan.id);
     setImportSaved(true);
-    setTimeout(() => {
-      setShowImportModal(false);
-      setParsedPlan(null);
-      navigate(`/plans/${plan.id}`);
-    }, 800);
+    setTimeout(() => { setShowImportModal(false); setParsedPlan(null); navigate(`/plans/${plan.id}`); }, 800);
   };
 
   const totalExercises = parsedPlan?.workouts.reduce((n, w) => n + w.exercises.length, 0) ?? 0;
 
   return (
     <>
-      <Header
-        title="My Plans"
-        action={
-          <>
-            {/* Load Plan from File */}
-            <button
-              onClick={openImportPicker}
-              title="Load Plan from File"
-              className="w-9 h-9 flex items-center justify-center text-slate-500 rounded-xl hover:text-primary-500"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px]">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-            </button>
-            <HeaderAddButton onClick={() => setShowModal(true)} />
-          </>
-        }
-      />
+      <Header title="My Plans" />
 
-      {/* Hidden file input — accepts .txt and .json */}
-      <input
-        ref={importFileRef}
-        type="file"
-        accept=".txt,.json"
-        className="hidden"
-        onChange={handleFileChange}
-      />
+      {/* Hidden file input */}
+      <input ref={importFileRef} type="file" accept=".txt,.json" className="hidden" onChange={handleFileChange} />
 
-      <div className="p-4">
+      <div className="p-4 pb-2">
         {importError && (
           <p className="bg-red-50 text-red-500 text-sm px-3 py-2 rounded-xl mb-4">{importError}</p>
         )}
 
-        {isLoading ? <Spinner /> : plans.length === 0 ? (
+        {isLoading ? (
+          <Spinner />
+        ) : plans.length === 0 ? (
           <div className="text-center py-16">
-            <p className="text-4xl mb-3">📋</p>
+            <p className="text-5xl mb-3">📋</p>
             <p className="font-bold text-slate-900 mb-1">No plans yet</p>
-            <p className="text-sm text-slate-500 mb-5">Create a plan or load one from a file</p>
-            <div className="flex gap-3 justify-center">
-              <Button onClick={() => setShowModal(true)}>Create Plan</Button>
-              <Button variant="outline" onClick={openImportPicker}>Load from File</Button>
-            </div>
+            <p className="text-sm text-slate-500">Use the buttons below to get started</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -237,10 +216,7 @@ export function PlansPage() {
               return (
                 <div key={plan.id} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3">
                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-easy' : 'bg-transparent'}`} />
-                  <div
-                    className="flex-1 min-w-0 cursor-pointer"
-                    onClick={() => navigate(`/plans/${plan.id}`)}
-                  >
+                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => navigate(`/plans/${plan.id}`)}>
                     <p className="font-bold text-slate-900">{plan.name}</p>
                     <p className="text-sm text-slate-400">
                       {plan.workouts.length} workout{plan.workouts.length !== 1 ? 's' : ''}
@@ -250,9 +226,7 @@ export function PlansPage() {
                   <button
                     onClick={() => setActivePlan.mutate(plan.id)}
                     className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition-colors ${
-                      isActive
-                        ? 'bg-easy-light text-easy border-easy'
-                        : 'bg-slate-50 text-slate-400 border-slate-200'
+                      isActive ? 'bg-easy-light text-easy border-easy' : 'bg-slate-50 text-slate-400 border-slate-200'
                     }`}
                   >
                     {isActive ? '✓ Active' : 'Set Active'}
@@ -265,6 +239,55 @@ export function PlansPage() {
             })}
           </div>
         )}
+      </div>
+
+      {/* ── Sticky action bar ─────────────────────────────────────────────── */}
+      <div className="sticky bottom-0 bg-white border-t border-slate-100 px-4 py-3 grid grid-cols-2 gap-2.5">
+
+        {/* Create new plan */}
+        <button
+          onClick={() => setShowModal(true)}
+          className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-primary-500 text-white shadow-sm active:scale-[0.97] transition-transform"
+        >
+          <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </div>
+          <div className="text-left">
+            <p className="text-sm font-bold leading-tight">Create new</p>
+            <p className="text-[11px] text-primary-200 leading-tight mt-0.5">Start from scratch</p>
+          </div>
+        </button>
+
+        {/* Load plan from file + ? badge */}
+        <div className="relative">
+          <button
+            onClick={openImportPicker}
+            className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform"
+          >
+            <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-bold leading-tight">Load from file</p>
+              <p className="text-[11px] text-primary-400 leading-tight mt-0.5">.txt or .json</p>
+            </div>
+          </button>
+
+          {/* ? format guide badge */}
+          <button
+            onClick={e => { e.stopPropagation(); setShowFormatGuide(true); }}
+            title="Show file format guide"
+            className="absolute -top-2.5 -right-2.5 w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 text-[11px] font-bold flex items-center justify-center shadow-sm transition-colors z-10"
+          >
+            ?
+          </button>
+        </div>
       </div>
 
       {/* ── Create plan modal ── */}
@@ -290,8 +313,6 @@ export function PlansPage() {
       {showImportModal && parsedPlan && (
         <Modal title="Load Plan from File" onClose={() => { setShowImportModal(false); setParsedPlan(null); }}>
           <div className="space-y-4">
-
-            {/* Summary */}
             <div className="bg-slate-50 rounded-xl p-3 space-y-2">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Detected</p>
               <p className="text-sm font-semibold text-slate-700">
@@ -302,9 +323,7 @@ export function PlansPage() {
                   <div key={i}>
                     <p className="text-xs font-bold text-slate-600 mt-1">{w.name}</p>
                     {w.exercises.map((ex, j) => (
-                      <p key={j} className="text-xs text-slate-400 pl-2">
-                        · {ex.name} — {ex.defaultSets}×{ex.defaultReps}
-                      </p>
+                      <p key={j} className="text-xs text-slate-400 pl-2">· {ex.name} — {ex.defaultSets}×{ex.defaultReps}</p>
                     ))}
                   </div>
                 ))}
@@ -313,8 +332,6 @@ export function PlansPage() {
                 )}
               </div>
             </div>
-
-            {/* Rename before saving */}
             <Input
               label="Plan Name"
               autoFocus
@@ -322,44 +339,15 @@ export function PlansPage() {
               onChange={e => setImportName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !importSaved && confirmImport()}
             />
-
-            <Button
-              fullWidth
-              loading={upsertPlan.isPending}
-              onClick={confirmImport}
-            >
+            <Button fullWidth loading={upsertPlan.isPending} onClick={confirmImport}>
               {importSaved ? '✓ Saved!' : 'Load Plan'}
             </Button>
-
-            {/* Format hint */}
-            <details className="text-xs text-slate-400">
-              <summary className="cursor-pointer font-semibold hover:text-slate-600 select-none">
-                How to format a .txt file
-              </summary>
-              <pre className="mt-2 bg-slate-50 rounded-lg p-3 whitespace-pre-wrap leading-relaxed font-mono text-[11px]">{`My Strength Plan
-
-Push Day
-Bench Press 4x8-12
-Overhead Press 3x10
-Tricep Pushdown 3x12-15
-
-Pull Day
-Deadlift 4x5
-Pull-up 3x8
-Bicep Curl 3x10
-
-Legs
-Squat 4x6-8
-Romanian Deadlift 3x10
-Calf Raise 4x20`}
-              </pre>
-              <p className="mt-2">
-                First line = plan name. Section headers start new workouts. Exercise lines use <code className="bg-slate-100 px-1 rounded">Name NxReps</code> format.
-              </p>
-            </details>
           </div>
         </Modal>
       )}
+
+      {/* ── Format guide modal ── */}
+      {showFormatGuide && <FormatGuideModal onClose={() => setShowFormatGuide(false)} />}
     </>
   );
 }

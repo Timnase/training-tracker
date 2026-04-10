@@ -104,6 +104,18 @@ export function useActiveWorkout() {
     });
   }, []);
 
+  const renameExercise = useCallback((exId: string, newName: string) => {
+    setWorkoutState(prev => {
+      if (!prev) return prev;
+      const exercises = prev.exercises.map(ex =>
+        ex.exerciseId === exId ? { ...ex, exerciseName: newName } : ex,
+      );
+      const updated = { ...prev, exercises };
+      save(updated);
+      return updated;
+    });
+  }, []);
+
   return {
     workout,
     setWorkout,
@@ -114,5 +126,6 @@ export function useActiveWorkout() {
     setFeeling,
     setCardio,
     setNotes,
+    renameExercise,
   };
 }

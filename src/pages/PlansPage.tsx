@@ -200,9 +200,14 @@ export function PlansPage() {
   const [showFormatGuide, setShowFormatGuide] = useState(false);
 
   // ── Image scan ──
-  const imageFileRef                    = useRef<HTMLInputElement>(null);
+  const imageFileRef                      = useRef<HTMLInputElement>(null);
   const [imageScanning, setImageScanning] = useState(false);
   const [imageError,    setImageError]    = useState('');
+
+  // ── Paste text ──
+  const [showTextModal, setShowTextModal] = useState(false);
+  const [pastedText,    setPastedText]    = useState('');
+  const [textError,     setTextError]     = useState('');
 
   // Auto-open create modal when navigated here with openCreate state
   useEffect(() => {
@@ -249,6 +254,21 @@ export function PlansPage() {
   };
 
   const totalExercises = parsedPlan?.workouts.reduce((n, w) => n + w.exercises.length, 0) ?? 0;
+
+  const openTextModal = () => {
+    setPastedText(EXAMPLE_PLAN_TEXT);
+    setTextError('');
+    setShowTextModal(true);
+  };
+
+  const confirmPastedText = () => {
+    if (!pastedText.trim()) { setTextError('Please enter some text first.'); return; }
+    const plan = parseTextPlan(pastedText);
+    if (!plan.workouts.length) { setTextError('No workouts detected. Make sure exercise lines use the "Name NxReps" format.'); return; }
+    setParsedPlan(plan); setImportName(plan.name); setImportSaved(false);
+    setShowTextModal(false);
+    setShowImportModal(true);
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -395,39 +415,56 @@ export function PlansPage() {
           </div>
         </div>
 
-        {/* Row 2: Scan image (full width, secondary) */}
-        <button
-          onClick={() => { setImageError(''); imageFileRef.current?.click(); }}
-          disabled={imageScanning}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl border-2 border-dashed border-slate-300 text-slate-500 hover:border-primary-400 hover:text-primary-600 transition-colors active:scale-[0.98] disabled:opacity-60"
-        >
-          {imageScanning ? (
-            <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center">
-              <svg className="animate-spin w-5 h-5 text-primary-500" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+        {/* Row 2: Paste text  +  Scan image */}
+        <div className="grid grid-cols-2 gap-2.5">
+          {/* Paste text with template */}
+          <button
+            onClick={openTextModal}
+            className="flex items-center gap-2.5 px-3 py-2.5 rounded-2xl border-2 border-dashed border-slate-300 text-slate-500 hover:border-slate-400 hover:text-slate-700 transition-colors active:scale-[0.98]"
+          >
+            <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
               </svg>
             </div>
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
-                <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
-                <circle cx="12" cy="13" r="4" />
-              </svg>
+            <div className="text-left">
+              <p className="text-xs font-bold leading-tight">Paste text</p>
+              <p className="text-[10px] text-slate-400 leading-tight mt-0.5">Edit a template</p>
             </div>
-          )}
-          <div className="text-left">
-            <p className="text-sm font-semibold leading-tight">
-              {imageScanning ? 'Scanning image…' : 'Scan image'}
-            </p>
-            <p className="text-[11px] leading-tight mt-0.5 text-slate-400">
-              {imageScanning ? 'Claude AI is reading your screenshot' : 'Extract plan from a screenshot · requires API key'}
-            </p>
-          </div>
-          {!imageScanning && (
-            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 uppercase tracking-wide flex-shrink-0">AI</span>
-          )}
-        </button>
+          </button>
+
+          {/* Scan image */}
+          <button
+            onClick={() => { setImageError(''); imageFileRef.current?.click(); }}
+            disabled={imageScanning}
+            className="flex items-center gap-2.5 px-3 py-2.5 rounded-2xl border-2 border-dashed border-slate-300 text-slate-500 hover:border-primary-400 hover:text-primary-600 transition-colors active:scale-[0.98] disabled:opacity-60"
+          >
+            {imageScanning ? (
+              <div className="w-7 h-7 flex-shrink-0 flex items-center justify-center">
+                <svg className="animate-spin w-4 h-4 text-primary-500" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+              </div>
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
+                  <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+              </div>
+            )}
+            <div className="text-left">
+              <p className="text-xs font-bold leading-tight">{imageScanning ? 'Scanning…' : 'Scan image'}</p>
+              <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
+                {imageScanning ? 'AI reading…' : 'Screenshot · AI'}
+              </p>
+            </div>
+          </button>
+        </div>
       </div>
 
       {/* ── Create plan modal ── */}
@@ -481,6 +518,28 @@ export function PlansPage() {
             />
             <Button fullWidth loading={upsertPlan.isPending} onClick={confirmImport}>
               {importSaved ? '✓ Saved!' : 'Load Plan'}
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Paste text modal ── */}
+      {showTextModal && (
+        <Modal title="Paste Your Plan" onClose={() => setShowTextModal(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">Edit the template below, then tap <strong>Import</strong>.</p>
+            <textarea
+              className="w-full h-56 text-sm font-mono p-3 rounded-xl border border-slate-200 bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary-400"
+              value={pastedText}
+              onChange={e => setPastedText(e.target.value)}
+              spellCheck={false}
+              autoFocus
+            />
+            {textError && (
+              <p className="text-sm text-red-500">{textError}</p>
+            )}
+            <Button fullWidth onClick={confirmPastedText}>
+              Import
             </Button>
           </div>
         </Modal>

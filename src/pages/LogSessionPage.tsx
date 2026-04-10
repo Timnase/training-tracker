@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useActiveWorkout } from '../hooks/useActiveWorkout';
-import { useInsertWorkout } from '../hooks/useWorkouts';
+import { useUpsertWorkout } from '../hooks/useWorkouts';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { usePlan, useUpsertPlan } from '../hooks/usePlans';
 import { Header } from '../components/layout/Header';
@@ -476,7 +476,7 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
 
 export function LogSessionPage() {
   const navigate      = useNavigate();
-  const insertWorkout = useInsertWorkout();
+  const upsertWorkout = useUpsertWorkout();
   const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
@@ -486,14 +486,28 @@ export function LogSessionPage() {
   const [editingExId, setEditingExId] = useState<string | null>(null);
   const [editName,    setEditName]    = useState('');
 
-  // Auto-save indicator — workout is already saved to localStorage on every change
-  const [savedFlash, setSavedFlash] = useState(false);
+  // Cloud auto-save: debounce 15 s after last change, then upsert to Supabase.
+  // Status: 'idle' → 'pending' (debounce running) → 'saving' → 'saved' | 'error'
+  type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+
   useEffect(() => {
     if (!workout) return;
-    setSavedFlash(true);
-    const t = setTimeout(() => setSavedFlash(false), 1500);
-    return () => clearTimeout(t);
-  }, [workout]);
+    setSaveStatus('pending');
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      setSaveStatus('saving');
+      try {
+        await upsertWorkout.mutateAsync({ ...workout, date: workout.startedAt ?? new Date().toISOString() });
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
+    }, 15_000);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [workout]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load plan for "Update plan" path — must be called before any early return
   const plan = usePlan(workout?.planId ?? '');
@@ -543,7 +557,9 @@ export function LogSessionPage() {
   const finish = async () => {
     const hasData = workout.exercises.some(e => e.sets.some(s => s.weight || s.reps));
     if (!hasData && !confirm('No sets logged yet. Save anyway?')) return;
-    await insertWorkout.mutateAsync({ ...workout, date: new Date().toISOString() });
+    // Cancel any pending auto-save and do a final upsert with the real finish date
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    await upsertWorkout.mutateAsync({ ...workout, date: new Date().toISOString() });
     setWorkout(null);
     navigate('/', { replace: true });
   };
@@ -559,13 +575,22 @@ export function LogSessionPage() {
       <Header title={workout.workoutTemplateName} showBack />
 
       <div className="p-4 space-y-5 pb-8">
-        {/* Plan name + elapsed timer + auto-save indicator */}
+        {/* Plan name + elapsed timer + cloud save indicator */}
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
           <div className="flex items-center gap-3">
-            <span className={`text-[10px] font-semibold transition-opacity duration-500 ${savedFlash ? 'text-green-500 opacity-100' : 'opacity-0'}`}>
-              ✓ Saved
-            </span>
+            {saveStatus === 'pending' && (
+              <span className="text-[10px] text-slate-400">● unsaved</span>
+            )}
+            {saveStatus === 'saving' && (
+              <span className="text-[10px] text-primary-400 animate-pulse">↑ saving…</span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="text-[10px] text-green-500">☁ saved</span>
+            )}
+            {saveStatus === 'error' && (
+              <span className="text-[10px] text-red-400" title="Auto-save failed">⚠ save failed</span>
+            )}
             <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
           </div>
         </div>
@@ -665,7 +690,7 @@ export function LogSessionPage() {
           onChange={e => setNotes(e.target.value)}
         />
 
-        <Button fullWidth size="lg" loading={insertWorkout.isPending} onClick={finish}>
+        <Button fullWidth size="lg" loading={upsertWorkout.isPending} onClick={finish}>
           ✓ Finish Workout
         </Button>
         <Button fullWidth variant="ghost" size="sm" onClick={discard}>

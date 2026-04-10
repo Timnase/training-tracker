@@ -19,6 +19,14 @@ export function useInsertWorkout() {
   });
 }
 
+export function useUpsertWorkout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: WorkoutsService.upsert,
+    onSuccess:  () => qc.invalidateQueries({ queryKey: QUERY_KEY }),
+  });
+}
+
 export function useDeleteWorkout() {
   const qc = useQueryClient();
   return useMutation({

@@ -45,6 +45,24 @@ export const WorkoutsService = {
     if (error) throw error;
   },
 
+  async upsert(log: WorkoutLog): Promise<void> {
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from('workouts').upsert({
+      id:                    log.id,
+      user_id:               user!.id,
+      plan_id:               log.planId,
+      plan_name:             log.planName,
+      workout_template_id:   log.workoutTemplateId,
+      workout_template_name: log.workoutTemplateName,
+      date:                  log.date,
+      feeling:               log.feeling,
+      cardio:                log.cardio,
+      exercises:             log.exercises,
+      notes:                 log.notes,
+    }, { onConflict: 'id' });
+    if (error) throw error;
+  },
+
   async remove(workoutId: string): Promise<void> {
     const { error } = await supabase.from('workouts').delete().eq('id', workoutId);
     if (error) throw error;

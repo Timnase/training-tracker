@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useActiveWorkout } from '../hooks/useActiveWorkout';
 import { useInsertWorkout } from '../hooks/useWorkouts';
 import { useWorkouts } from '../hooks/useWorkouts';
+import { usePlan, useUpsertPlan } from '../hooks/usePlans';
 import { Header } from '../components/layout/Header';
 import { Button } from '../components/ui/Button';
 import { Toggle } from '../components/ui/Toggle';
 import { Input, Textarea } from '../components/ui/Input';
+import { Modal } from '../components/Modal';
 import { daysAgo, groupExercises } from '../utils';
 import type { Difficulty, Exercise, ExerciseGroup, ExerciseLog, Feeling, SetLog } from '../types';
 
@@ -400,9 +402,10 @@ interface ExerciseBlockProps {
   onAddSet:    () => void;
   onRemoveSet: (setIdx: number) => void;
   onNoteChange:(note: string) => void;
+  onEdit:      () => void;
 }
 
-function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange }: ExerciseBlockProps) {
+function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange, onEdit }: ExerciseBlockProps) {
   const lastWo  = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
   const lastLog = lastWo?.exercises.find(e => e.exerciseId === exercise.id) ?? null;
   const isUnilateral = log.isUnilateral ?? exercise.isUnilateral ?? false;
@@ -414,10 +417,20 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
   return (
     <div className="py-3 px-4">
       <div className="flex items-center gap-2 mb-0.5">
-        <p className="font-bold text-slate-900">{exercise.name}</p>
+        <p className="font-bold text-slate-900 flex-1">{log.exerciseName}</p>
         {isUnilateral && (
           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-wide">L/R</span>
         )}
+        <button
+          onClick={onEdit}
+          title="Edit exercise"
+          className="w-7 h-7 flex items-center justify-center text-slate-300 hover:text-primary-500 rounded-lg transition-colors"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+        </button>
       </div>
       <p className="text-xs text-slate-400 mt-0.5 mb-3">
         {lastWo ? `📅 ${daysAgo(lastWo.date)} · ` : ''}{lastPerfText}
@@ -464,9 +477,14 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
 export function LogSessionPage() {
   const navigate      = useNavigate();
   const insertWorkout = useInsertWorkout();
+  const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
-  const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes } = useActiveWorkout();
+  const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
+
+  // Exercise edit modal state
+  const [editingExId, setEditingExId] = useState<string | null>(null);
+  const [editName,    setEditName]    = useState('');
 
   // Auto-save indicator — workout is already saved to localStorage on every change
   const [savedFlash, setSavedFlash] = useState(false);
@@ -477,10 +495,40 @@ export function LogSessionPage() {
     return () => clearTimeout(t);
   }, [workout]);
 
+  // Load plan for "Update plan" path — must be called before any early return
+  const plan = usePlan(workout?.planId ?? '');
+
   if (!workout) {
     navigate('/log', { replace: true });
     return null;
   }
+
+  const openEditExercise = (exId: string, currentName: string) => {
+    setEditingExId(exId);
+    setEditName(currentName);
+  };
+
+  const applyExerciseEdit = (scope: 'workout' | 'plan') => {
+    if (!editingExId) return;
+    const trimmed = editName.trim();
+    if (!trimmed) { setEditingExId(null); return; }
+
+    // Always update the in-progress workout
+    renameExercise(editingExId, trimmed);
+
+    if (scope === 'plan' && plan) {
+      const updatedPlan = {
+        ...plan,
+        workouts: plan.workouts.map(w =>
+          w.id === workout.workoutTemplateId
+            ? { ...w, exercises: w.exercises.map(ex => ex.id === editingExId ? { ...ex, name: trimmed } : ex) }
+            : w,
+        ),
+      };
+      upsertPlan.mutate(updatedPlan);
+    }
+    setEditingExId(null);
+  };
 
   // Reconstruct Exercise objects from the log for grouping
   const exercisesForGrouping: Exercise[] = workout.exercises.map(e => ({
@@ -580,6 +628,7 @@ export function LogSessionPage() {
                             onAddSet={() => addSet(log.exerciseId)}
                             onRemoveSet={i => removeSet(log.exerciseId, i)}
                             onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
+                            onEdit={() => openEditExercise(ex.id, log.exerciseName)}
                           />
                         </div>
                       );
@@ -599,6 +648,7 @@ export function LogSessionPage() {
                     onAddSet={() => addSet(log.exerciseId)}
                     onRemoveSet={i => removeSet(log.exerciseId, i)}
                     onNoteChange={note => updateExerciseNote(log.exerciseId, note)}
+                    onEdit={() => openEditExercise(ex.id, log.exerciseName)}
                   />
                 </div>
               );
@@ -622,6 +672,39 @@ export function LogSessionPage() {
           Discard Workout
         </Button>
       </div>
+
+      {/* ── Edit exercise modal ── */}
+      {editingExId && (
+        <Modal title="Edit Exercise" onClose={() => setEditingExId(null)}>
+          <div className="space-y-4">
+            <Input
+              label="Exercise name"
+              autoFocus
+              value={editName}
+              onChange={e => setEditName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && applyExerciseEdit('workout')}
+            />
+            <p className="text-xs text-slate-400">Apply this change to:</p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => applyExerciseEdit('workout')}
+                className="py-3 px-4 rounded-2xl border-2 border-slate-200 text-sm font-bold text-slate-600 active:bg-slate-50 transition-colors"
+              >
+                <p>This workout</p>
+                <p className="text-[11px] font-normal text-slate-400 mt-0.5">Only today's session</p>
+              </button>
+              <button
+                onClick={() => applyExerciseEdit('plan')}
+                disabled={!plan}
+                className="py-3 px-4 rounded-2xl bg-primary-500 text-white text-sm font-bold active:bg-primary-600 transition-colors disabled:opacity-50"
+              >
+                <p>Update plan</p>
+                <p className="text-[11px] font-normal text-primary-200 mt-0.5">Saves to template</p>
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

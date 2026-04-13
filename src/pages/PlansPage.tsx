@@ -264,7 +264,15 @@ export function PlansPage() {
   const confirmPastedText = () => {
     if (!pastedText.trim()) { setTextError('Please enter some text first.'); return; }
     const plan = parseTextPlan(pastedText);
-    if (!plan.workouts.length) { setTextError('No workouts detected. Make sure exercise lines use the "Name NxReps" format.'); return; }
+    if (!plan.workouts.length) {
+      setTextError('No workouts found. Add a day heading (e.g. "Push Day") before listing exercises.');
+      return;
+    }
+    const exerciseCount = plan.workouts.reduce((n, w) => n + w.exercises.length, 0);
+    if (exerciseCount === 0) {
+      setTextError('No exercises found. Each exercise line must follow the format: "Bench Press 4x8".');
+      return;
+    }
     setParsedPlan(plan); setImportName(plan.name); setImportSaved(false);
     setShowTextModal(false);
     setShowImportModal(true);

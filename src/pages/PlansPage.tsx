@@ -81,10 +81,17 @@ function parsePlanFile(text: string, fileName: string): ParsedPlan | null {
 }
 
 // ─── Image → plan via Claude Vision ──────────────────────────────────────────
-// Requires VITE_CLAUDE_API_KEY to be set in .env.local
-// Uses anthropic-dangerous-direct-browser-access header for direct browser calls
+// Requires VITE_CLAUDE_API_KEY to be set in .env.local (see src/vite-env.d.ts).
+// Uses anthropic-dangerous-direct-browser-access header for direct browser calls.
+//
+// Security notes:
+//  • Only JPEG / PNG / GIF / WebP are accepted — validated before the API call.
+//  • The image is sent to Anthropic's API servers for processing.
+//  • The API response is capped and parsed as plain text; no HTML/script injection risk.
 
 const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY as string | undefined;
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
 const IMAGE_PROMPT = `You are a workout plan extractor. Look at this image and extract any workout plan data you can see.
 
@@ -135,7 +142,8 @@ async function extractPlanFromImage(base64: string, mimeType: string): Promise<P
 
   if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
   const json = await res.json() as { content: { type: string; text: string }[] };
-  const text = json.content.find(c => c.type === 'text')?.text ?? '';
+  // Slice response to guard against unexpectedly large payloads before parsing
+  const text = (json.content.find(c => c.type === 'text')?.text ?? '').slice(0, 8000);
   if (text.trim() === 'NO_PLAN_FOUND') return null;
   return parseTextPlan(text);
 }
@@ -246,6 +254,13 @@ export function PlansPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
+
+    // Validate mime type before reading — only send known image formats to the API
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+      setImageError('Unsupported image type. Please use JPG, PNG, GIF, or WebP.');
+      return;
+    }
+
     setImageError('');
     const reader = new FileReader();
     reader.onload = async ev => {
@@ -253,6 +268,13 @@ export function PlansPage() {
       // dataUrl = "data:<mimeType>;base64,<data>"
       const [meta, base64] = dataUrl.split(',');
       const mimeType = meta.replace('data:', '').replace(';base64', '') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+      // Second guard: ensure the data-URL mime type is also in the allowed set
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+        setImageError('Unsupported image format. Please use JPG, PNG, GIF, or WebP.');
+        return;
+      }
+
       setImageScanning(true);
       try {
         const plan = await extractPlanFromImage(base64, mimeType);

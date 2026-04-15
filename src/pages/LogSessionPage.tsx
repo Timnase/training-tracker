@@ -145,13 +145,11 @@ function RestTimer() {
   };
 
   const start = (secs: number) => {
-    // Create and load (not play) the audio element inside the gesture so iOS allows
-    // future .play() calls — loading without playing avoids grabbing audio focus
-    // and interrupting background music from other apps.
+    // Create the audio element inside the gesture so browsers permit future play() calls.
+    // Do NOT call a.load() — that activates the iOS audio session immediately and
+    // interrupts background music in other apps during the countdown.
     if (BEEP_URL && !audioRef.current) {
-      const a = new Audio(BEEP_URL);
-      a.load();
-      audioRef.current = a;
+      audioRef.current = new Audio(BEEP_URL);
     }
 
     if (intervalRef.current) clearInterval(intervalRef.current);

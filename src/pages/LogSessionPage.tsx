@@ -125,11 +125,27 @@ function useRestTimer(): RestTimerHandle {
     if ('vibrate' in navigator) navigator.vibrate([300, 100, 300]);
     const a = audioRef.current;
     if (!a) return;
+
+    // Request a transient audio session so the OS resumes background audio
+    // (Spotify, podcasts, etc.) as soon as the beep finishes.
+    // 'transient' = brief interruption, other apps auto-resume after.
+    // Supported on iOS 17+ and Chrome for Android; silently ignored elsewhere.
+    if ('audioSession' in navigator) {
+      try { (navigator as any).audioSession.type = 'transient'; } catch {}
+    }
+
+    // Set onended before play() so it is always registered.
+    // Clearing src then calling load() fully deactivates the media element —
+    // this signals the OS that the audio session is done and allows interrupted
+    // apps to resume. (src='' alone is insufficient on some iOS versions.)
+    a.onended = () => {
+      a.src = '';
+      a.load();
+      audioRef.current = null;
+    };
     a.currentTime = 0;
     a.volume = 1;
     a.play().catch(() => {});
-    // Release the audio session when the beep ends so background music can resume.
-    a.onended = () => { a.src = ''; audioRef.current = null; };
   };
 
   const scheduleNotification = async (delayMs: number) => {

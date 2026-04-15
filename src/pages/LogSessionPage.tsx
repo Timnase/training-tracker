@@ -88,46 +88,50 @@ function _makeBeepUrl(): string {
 const BEEP_URL = _makeBeepUrl();
 
 // ─── Rest timer ───────────────────────────────────────────────────────────────
-// Uses an absolute endTime so the countdown stays accurate even when the
-// browser throttles intervals in the background.
+// State and logic live in useRestTimer(). Two components consume it:
+//  • RestTimerBanner  — sticky bar at the top of the page while running
+//  • RestTimerControls — idle preset/custom picker, shown inline when stopped
 
 const PRESETS = [30, 60, 90, 120, 180];
 
-function RestTimer() {
-  const [endTime,    setEndTime]    = useState<number | null>(null); // absolute ms timestamp
-  const [total,      setTotal]      = useState(90);
-  const [remaining,  setRemaining]  = useState<number | null>(null);
-  const [finished,   setFinished]   = useState(false); // show "done" flash when returning from bg
-  const [selected,   setSelected]   = useState(90);
-  const [customMin,  setCustomMin]  = useState('');
-  const [customSec,  setCustomSec]  = useState('');
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Audio element — created lazily inside gesture handler so it's already unlocked for iOS
-  const audioRef     = useRef<HTMLAudioElement | null>(null);
+interface RestTimerHandle {
+  remaining:    number | null;
+  total:        number;
+  finished:     boolean;
+  selected:     number;
+  customMin:    string;
+  customSec:    string;
+  setCustomMin: (v: string) => void;
+  setCustomSec: (v: string) => void;
+  start:        (secs: number) => void;
+  stop:         () => void;
+  dismiss:      () => void;
+}
+
+function useRestTimer(): RestTimerHandle {
+  const [endTime,   setEndTime]   = useState<number | null>(null);
+  const [total,     setTotal]     = useState(90);
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const [finished,  setFinished]  = useState(false);
+  const [selected,  setSelected]  = useState(90);
+  const [customMin, setCustomMin] = useState('');
+  const [customSec, setCustomSec] = useState('');
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioRef    = useRef<HTMLAudioElement | null>(null);
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
   const playBeep = () => {
-    // Vibrate — works reliably on Android/iOS regardless of audio focus
     if ('vibrate' in navigator) navigator.vibrate([300, 100, 300]);
-    // Audio beep — may silently fail on iOS if gesture unlock wasn't granted
     const a = audioRef.current;
     if (!a) return;
     a.currentTime = 0;
     a.volume = 1;
     a.play().catch(() => {});
-    // When the beep finishes, release the audio session by clearing the src.
-    // This signals the OS that our audio is done and allows interrupted apps
-    // (e.g. Spotify) to resume playback automatically.
-    a.onended = () => {
-      a.src = '';
-      audioRef.current = null; // recreated on next start() gesture
-    };
+    // Release the audio session when the beep ends so background music can resume.
+    a.onended = () => { a.src = ''; audioRef.current = null; };
   };
 
-  // ── Service-worker notification helpers ──────────────────────────────────
-  // Posts a message to the SW so it can fire a local notification even when
-  // the browser has throttled the page's JS (app in background).
   const scheduleNotification = async (delayMs: number) => {
     if (!('Notification' in window) || !navigator.serviceWorker) return;
     const permission = Notification.permission === 'granted'
@@ -144,6 +148,12 @@ function RestTimer() {
     ).catch(() => {});
   };
 
+  const stop = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setEndTime(null); setRemaining(null); setFinished(false);
+    cancelNotification();
+  };
+
   const start = (secs: number) => {
     // Create the audio element inside the gesture so browsers permit future play() calls.
     // Do NOT call a.load() — that activates the iOS audio session immediately and
@@ -151,9 +161,8 @@ function RestTimer() {
     if (BEEP_URL && !audioRef.current) {
       audioRef.current = new Audio(BEEP_URL);
     }
-
     if (intervalRef.current) clearInterval(intervalRef.current);
-    setFinished(false);
+    setSelected(secs); setFinished(false);
     const end = Date.now() + secs * 1000;
     setEndTime(end); setTotal(secs); setRemaining(secs);
     scheduleNotification(secs * 1000).catch(() => {});
@@ -161,19 +170,11 @@ function RestTimer() {
       const r = calcRemaining(end);
       if (r <= 0) {
         clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
-        cancelNotification();
-        playBeep();
+        cancelNotification(); playBeep();
       } else setRemaining(r);
-    }, 250); // poll 4× per second for accuracy
+    }, 250);
   };
 
-  const stop = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    setEndTime(null); setRemaining(null); setFinished(false);
-    cancelNotification();
-  };
-
-  // Re-sync when returning from background (browser throttles intervals)
   useEffect(() => {
     const onVisible = () => {
       if (!document.hidden && endTime) {
@@ -187,55 +188,85 @@ function RestTimer() {
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
-  // ── Timer finished while app was in background ──
+  return { remaining, total, finished, selected, customMin, customSec, setCustomMin, setCustomSec, start, stop, dismiss: () => setFinished(false) };
+}
+
+// ─── Sticky banner shown at the top of the page while the timer is active ─────
+
+function RestTimerBanner({ timer }: { timer: RestTimerHandle }) {
+  const { remaining, total, finished, start, stop, dismiss } = timer;
+
   if (finished) {
     return (
-      <div className="rounded-xl p-3 flex items-center gap-3 bg-easy-light border border-easy">
-        <span className="text-2xl">✅</span>
+      <div className="sticky top-0 z-40 bg-green-50 border-b-2 border-green-200 px-4 py-3 flex items-center gap-3">
+        <span className="text-xl">✅</span>
         <div className="flex-1">
-          <p className="text-sm font-bold text-easy">Rest done!</p>
-          <p className="text-xs text-slate-500">Timer finished while you were away</p>
+          <p className="text-sm font-bold text-green-700">Rest done!</p>
+          <p className="text-xs text-green-600">Timer finished while you were away</p>
         </div>
-        <button onClick={() => setFinished(false)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Dismiss</button>
+        <button onClick={dismiss} className="text-xs font-bold text-green-600 px-2 py-1 rounded-lg hover:bg-green-100 active:bg-green-200">
+          Dismiss
+        </button>
       </div>
     );
   }
 
-  // ── Running ──
-  if (remaining !== null) {
-    const pct    = (remaining / total) * 100;
-    const urgent = remaining <= 10;
-    return (
-      <div className={`rounded-xl p-3 flex items-center gap-3 ${urgent ? 'bg-red-50' : 'bg-primary-50'}`}>
-        <div className="relative w-12 h-12 flex-shrink-0">
-          <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
-            <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
-            <circle cx="18" cy="18" r="15" fill="none"
-              stroke={urgent ? '#ef4444' : '#6366f1'} strokeWidth="3"
-              strokeDasharray={`${2 * Math.PI * 15}`}
-              strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
-              strokeLinecap="round"
-            />
-          </svg>
-          <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-primary-600'}`}>
-            {remaining}
-          </span>
-        </div>
-        <div className="flex-1">
-          <p className={`text-sm font-bold ${urgent ? 'text-red-500' : 'text-primary-700'}`}>
-            {urgent ? 'Almost done!' : 'Resting…'}
-          </p>
-          <p className="text-xs text-slate-400">{remaining}s left</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => start(total)} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Reset</button>
-          <button onClick={stop}              className="text-xs font-semibold text-primary-500 hover:text-primary-700">Skip</button>
-        </div>
-      </div>
-    );
-  }
+  if (remaining === null) return null;
 
-  // ── Idle: tap a preset to start instantly, or enter custom min/sec ──
+  const pct    = (remaining / total) * 100;
+  const urgent = remaining <= 10;
+
+  return (
+    <div className={`sticky top-0 z-40 border-b-2 px-4 py-3 flex items-center gap-3 ${
+      urgent ? 'bg-red-50 border-red-300' : 'bg-indigo-50 border-indigo-200'
+    }`}>
+      {/* Circular progress ring */}
+      <div className="relative w-11 h-11 flex-shrink-0">
+        <svg className="w-11 h-11 -rotate-90" viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="15" fill="none" stroke={urgent ? '#fecaca' : '#c7d2fe'} strokeWidth="3" />
+          <circle cx="18" cy="18" r="15" fill="none"
+            stroke={urgent ? '#ef4444' : '#6366f1'} strokeWidth="3"
+            strokeDasharray={`${2 * Math.PI * 15}`}
+            strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
+            strokeLinecap="round"
+          />
+        </svg>
+        <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-indigo-600'}`}>
+          {remaining}
+        </span>
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-bold ${urgent ? 'text-red-600' : 'text-indigo-700'}`}>
+          {urgent ? 'Almost done!' : 'Resting…'}
+        </p>
+        <p className={`text-xs ${urgent ? 'text-red-400' : 'text-indigo-400'}`}>{remaining}s left</p>
+      </div>
+
+      <div className="flex gap-2 flex-shrink-0">
+        <button
+          onClick={() => start(total)}
+          className="text-xs font-semibold text-slate-500 hover:text-slate-700 px-2 py-1 rounded-lg"
+        >
+          Reset
+        </button>
+        <button
+          onClick={stop}
+          className={`text-xs font-bold px-3 py-1.5 rounded-lg ${
+            urgent ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-indigo-500 text-white hover:bg-indigo-600'
+          }`}
+        >
+          Skip
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Idle preset / custom picker — shown inline when timer is not running ──────
+
+function RestTimerControls({ timer }: { timer: RestTimerHandle }) {
+  const { selected, customMin, customSec, start, setCustomMin, setCustomSec } = timer;
   const customTotal = (parseInt(customMin) || 0) * 60 + (parseInt(customSec) || 0);
   const hasCustom   = customTotal > 0;
 
@@ -246,7 +277,7 @@ function RestTimer() {
         {PRESETS.map(p => (
           <button
             key={p}
-            onClick={() => { setSelected(p); setCustomMin(''); setCustomSec(''); start(p); }}
+            onClick={() => { setCustomMin(''); setCustomSec(''); start(p); }}
             className={`flex-1 py-2 rounded-lg text-xs font-bold border-2 transition-all active:scale-95
               ${selected === p && !hasCustom
                 ? 'border-primary-500 bg-primary-50 text-primary-600'
@@ -275,7 +306,7 @@ function RestTimer() {
         </div>
         {hasCustom && (
           <button
-            onClick={() => { setSelected(-1); start(customTotal); }}
+            onClick={() => start(customTotal)}
             className="px-3 py-1.5 rounded-xl bg-primary-500 text-white text-sm font-bold flex-shrink-0"
           >
             ▶ {customMin ? `${customMin}m` : ''}{customSec ? `${customSec}s` : ''}
@@ -486,6 +517,7 @@ export function LogSessionPage() {
   const { data: allWorkouts = [] } = useWorkouts();
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
+  const timer   = useRestTimer();
 
   // Exercise edit modal state
   const [editingExId, setEditingExId] = useState<string | null>(null);
@@ -579,6 +611,9 @@ export function LogSessionPage() {
     <>
       <Header title={workout.workoutTemplateName} showBack />
 
+      {/* Sticky timer banner — fixed at the top of the page while the timer is active */}
+      <RestTimerBanner timer={timer} />
+
       <div className="p-4 space-y-5 pb-8">
         {/* Plan name + elapsed timer + cloud save indicator */}
         <div className="flex items-center justify-between">
@@ -600,8 +635,8 @@ export function LogSessionPage() {
           </div>
         </div>
 
-        {/* Rest timer */}
-        <RestTimer />
+        {/* Rest timer controls — only shown when idle; banner covers the running state */}
+        {!timer.remaining && !timer.finished && <RestTimerControls timer={timer} />}
 
         {/* Feeling */}
         <section>

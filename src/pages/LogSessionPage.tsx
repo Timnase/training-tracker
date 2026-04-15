@@ -116,6 +116,13 @@ function RestTimer() {
     a.currentTime = 0;
     a.volume = 1;
     a.play().catch(() => {});
+    // When the beep finishes, release the audio session by clearing the src.
+    // This signals the OS that our audio is done and allows interrupted apps
+    // (e.g. Spotify) to resume playback automatically.
+    a.onended = () => {
+      a.src = '';
+      audioRef.current = null; // recreated on next start() gesture
+    };
   };
 
   // ── Service-worker notification helpers ──────────────────────────────────
@@ -138,13 +145,11 @@ function RestTimer() {
   };
 
   const start = (secs: number) => {
-    // Create and load (not play) the audio element inside the gesture so iOS allows
-    // future .play() calls — loading without playing avoids grabbing audio focus
-    // and interrupting background music from other apps.
+    // Create the audio element inside the gesture so browsers permit future play() calls.
+    // Do NOT call a.load() — that activates the iOS audio session immediately and
+    // interrupts background music in other apps during the countdown.
     if (BEEP_URL && !audioRef.current) {
-      const a = new Audio(BEEP_URL);
-      a.load();
-      audioRef.current = a;
+      audioRef.current = new Audio(BEEP_URL);
     }
 
     if (intervalRef.current) clearInterval(intervalRef.current);

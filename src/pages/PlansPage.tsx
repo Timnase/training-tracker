@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Modal } from '../components/Modal';
 import { Header } from '../components/layout/Header';
+import { supabase } from '../lib/supabase';
 import { uid } from '../utils';
 import type { Plan, WorkoutTemplate } from '../types';
 
@@ -81,72 +82,11 @@ function parsePlanFile(text: string, fileName: string): ParsedPlan | null {
 }
 
 // ─── Image → plan via Claude Vision ──────────────────────────────────────────
-// Requires VITE_CLAUDE_API_KEY to be set in .env.local (see src/vite-env.d.ts).
-// Uses anthropic-dangerous-direct-browser-access header for direct browser calls.
-//
-// Security notes:
-//  • Only JPEG / PNG / GIF / WebP are accepted — validated before the API call.
-//  • The image is sent to Anthropic's API servers for processing.
-//  • The API response is capped and parsed as plain text; no HTML/script injection risk.
-
-const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY as string | undefined;
+// Calls the `scan-image` Supabase Edge Function, which holds the Anthropic API
+// key server-side as a Supabase Secret (never bundled into client JS).
+// Only JPEG / PNG / GIF / WebP are accepted — validated before the call.
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
-
-const IMAGE_PROMPT = `You are a workout plan extractor. Look at this image and extract any workout plan data you can see.
-
-Return ONLY plain text in this exact format (no markdown, no explanation):
-
-Plan Name Here
-
-Workout Day Name
-Exercise Name 4x8-12
-Exercise Name 3x10
-Another Exercise 3x12
-
-Another Day Name
-Exercise Name 4x6
-
-Rules:
-- First line: plan name (infer from context, e.g. the heading or title)
-- Workout section headers are plain text lines with no "NxReps" pattern
-- Each exercise line must be: "Exercise Name SetsxReps" e.g. "Bench Press 4x8"
-- If sets/reps are not visible, use 3x10 as a default
-- Skip warm-ups, cool-downs, and non-exercise text
-
-If no workout plan is found in the image, respond with exactly: NO_PLAN_FOUND`;
-
-async function extractPlanFromImage(base64: string, mimeType: string): Promise<ParsedPlan | null> {
-  if (!CLAUDE_API_KEY) throw new Error('NO_API_KEY');
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': CLAUDE_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-4-6',
-      max_tokens: 1024,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-          { type: 'text',  text: IMAGE_PROMPT },
-        ],
-      }],
-    }),
-  });
-
-  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
-  const json = await res.json() as { content: { type: string; text: string }[] };
-  // Slice response to guard against unexpectedly large payloads before parsing
-  const text = (json.content.find(c => c.type === 'text')?.text ?? '').slice(0, 8000);
-  if (text.trim() === 'NO_PLAN_FOUND') return null;
-  return parseTextPlan(text);
-}
 
 // ─── Format guide modal ───────────────────────────────────────────────────────
 
@@ -305,16 +245,23 @@ export function PlansPage() {
 
       setImageScanning(true);
       try {
-        const plan = await extractPlanFromImage(base64, mimeType);
-        if (!plan) { setImageError('No workout plan detected in this image. Try a clearer screenshot.'); return; }
+        const { data, error } = await supabase.functions.invoke('scan-image', {
+          body: { base64, mimeType },
+        });
+        if (error) throw error;
+        const text: string = (data?.text ?? '').trim();
+        if (!text || text === 'NO_PLAN_FOUND') {
+          setImageError('No workout plan detected in this image. Try a clearer screenshot.');
+          return;
+        }
+        const plan = parseTextPlan(text);
+        if (!plan.workouts.length) {
+          setImageError('No workout plan detected in this image. Try a clearer screenshot.');
+          return;
+        }
         setParsedPlan(plan); setImportName(plan.name); setImportSaved(false); setShowImportModal(true);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown error';
-        if (msg === 'NO_API_KEY') {
-          setImageError('Add your Claude API key as VITE_CLAUDE_API_KEY in .env.local to enable image scanning.');
-        } else {
-          setImageError(`Image scan failed: ${msg}`);
-        }
+        setImageError(`Image scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       } finally {
         setImageScanning(false);
       }

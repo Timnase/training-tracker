@@ -19,15 +19,23 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
 
   if (data.type === 'SCHEDULE_NOTIFICATION' && typeof data.delayMs === 'number') {
     if (pendingNotification !== null) clearTimeout(pendingNotification);
-    pendingNotification = setTimeout(() => {
-      pendingNotification = null;
-      self.registration.showNotification('Rest over! 💪', {
-        body: 'Time to get back to it.',
-        icon: '/training-tracker/icons/icon-192.png',
-        badge: '/training-tracker/icons/icon-192.png',
-        tag: 'rest-timer',
-      });
-    }, data.delayMs);
+    const delayMs = data.delayMs;
+    // event.waitUntil keeps the SW alive for the full timer duration so the
+    // browser cannot terminate it before the notification fires.
+    event.waitUntil(
+      new Promise<void>(resolve => {
+        pendingNotification = setTimeout(async () => {
+          pendingNotification = null;
+          await self.registration.showNotification('Rest over! 💪', {
+            body: 'Time to get back to it.',
+            icon: '/training-tracker/icons/icon-192.png',
+            badge: '/training-tracker/icons/icon-192.png',
+            tag: 'rest-timer',
+          });
+          resolve();
+        }, delayMs);
+      }),
+    );
   }
 
   if (data.type === 'CANCEL_NOTIFICATION') {

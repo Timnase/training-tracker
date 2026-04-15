@@ -116,6 +116,13 @@ function RestTimer() {
     a.currentTime = 0;
     a.volume = 1;
     a.play().catch(() => {});
+    // When the beep finishes, release the audio session by clearing the src.
+    // This signals the OS that our audio is done and allows interrupted apps
+    // (e.g. Spotify) to resume playback automatically.
+    a.onended = () => {
+      a.src = '';
+      audioRef.current = null; // recreated on next start() gesture
+    };
   };
 
   // ── Service-worker notification helpers ──────────────────────────────────

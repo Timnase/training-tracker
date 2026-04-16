@@ -534,11 +534,12 @@ export function LogSessionPage() {
   const deleteWorkout = useDeleteWorkout();
   const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
+  const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   // Exclude the current session from the "previous performance" lookup — once
   // the auto-save fires this workout appears in allWorkouts and would otherwise
   // overwrite the previous-session hints with the in-progress (empty) data.
+  // Must be derived AFTER workout is declared to avoid temporal dead zone.
   const pastWorkouts = allWorkouts.filter(w => w.id !== workout?.id);
-  const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
   const timer   = useRestTimer();
 

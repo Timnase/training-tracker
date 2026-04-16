@@ -575,8 +575,8 @@ export function LogSessionPage() {
     if (!confirm('Discard this workout?')) return;
     // Cancel any pending auto-save timer so it doesn't fire after discard
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    // Remove from Supabase if an auto-save already ran
-    if (saveStatus !== 'idle' && workout) {
+    // Remove from Supabase only if an auto-save completed successfully
+    if (saveStatus === 'saved' && workout) {
       try { await deleteWorkout.mutateAsync(workout.id); } catch { /* best-effort */ }
     }
     setWorkout(null);

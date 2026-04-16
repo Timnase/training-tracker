@@ -497,21 +497,20 @@ export function LogSessionPage() {
   // Status: 'idle' → 'pending' (debounce running) → 'saving' → 'saved' | 'error'
   type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const saveTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Holds the in-flight upsert promise so discard() can await it and then
+  // delete the row if the save completed while discard was waiting.
+  const savePromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     if (!workout) return;
     setSaveStatus('pending');
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
+    saveTimerRef.current = setTimeout(() => {
       setSaveStatus('saving');
-      try {
-        await upsertWorkout.mutateAsync({ ...workout, date: workout.startedAt ?? new Date().toISOString() });
-        setSaveStatus('saved');
-      } catch {
-        setSaveStatus('error');
-      }
+      const p = upsertWorkout.mutateAsync({ ...workout, date: workout.startedAt ?? new Date().toISOString() });
+      savePromiseRef.current = p;
+      p.then(() => setSaveStatus('saved')).catch(() => setSaveStatus('error'));
     }, 15_000);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [workout]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -573,11 +572,18 @@ export function LogSessionPage() {
 
   const discard = async () => {
     if (!confirm('Discard this workout?')) return;
-    // Cancel any pending auto-save timer so it doesn't fire after discard
+    // Cancel any pending debounce timer so no new save can start
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    // Remove from Supabase only if an auto-save completed successfully
-    if (saveStatus === 'saved' && workout) {
-      try { await deleteWorkout.mutateAsync(workout.id); } catch { /* best-effort */ }
+    const workoutId = workout?.id;
+    if (saveStatus === 'saved' && workoutId) {
+      // Save already completed — delete the row
+      try { await deleteWorkout.mutateAsync(workoutId); } catch { /* best-effort */ }
+    } else if (saveStatus === 'saving' && savePromiseRef.current && workoutId) {
+      // Save is in-flight — wait for it to settle, then delete if it succeeded
+      try {
+        await savePromiseRef.current;
+        await deleteWorkout.mutateAsync(workoutId);
+      } catch { /* save failed, nothing to delete */ }
     }
     setWorkout(null);
     navigate('/log', { replace: true });

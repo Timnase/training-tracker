@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useActiveWorkout } from '../hooks/useActiveWorkout';
-import { useUpsertWorkout } from '../hooks/useWorkouts';
+import { useUpsertWorkout, useDeleteWorkout } from '../hooks/useWorkouts';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { usePlan, useUpsertPlan } from '../hooks/usePlans';
 import { Header } from '../components/layout/Header';
@@ -395,18 +395,20 @@ function SetRow({ index, set, lastSet, onUpdate, onRemove, isUnilateral }: SetRo
 // ─── Exercise block ───────────────────────────────────────────────────────────
 
 interface ExerciseBlockProps {
-  exercise:    Exercise;
-  log:         ExerciseLog;
-  allWorkouts: { exercises: ExerciseLog[]; date: string }[];
-  onUpdateSet: (setIdx: number, patch: Partial<SetLog>) => void;
-  onAddSet:    () => void;
-  onRemoveSet: (setIdx: number) => void;
-  onNoteChange:(note: string) => void;
-  onEdit:      () => void;
+  exercise:          Exercise;
+  log:               ExerciseLog;
+  previousWorkouts:  { exercises: ExerciseLog[]; date: string }[];
+  onUpdateSet:       (setIdx: number, patch: Partial<SetLog>) => void;
+  onAddSet:          () => void;
+  onRemoveSet:       (setIdx: number) => void;
+  onNoteChange:      (note: string) => void;
+  onEdit:            () => void;
 }
 
-function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange, onEdit }: ExerciseBlockProps) {
-  const lastWo  = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
+function ExerciseBlock({ exercise, log, previousWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange, onEdit }: ExerciseBlockProps) {
+  // Each exercise may have last been done in a different past workout, so we
+  // search all previous sessions (current session excluded by the caller).
+  const lastWo  = previousWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
   const lastLog = lastWo?.exercises.find(e => e.exerciseId === exercise.id) ?? null;
   const isUnilateral = log.isUnilateral ?? exercise.isUnilateral ?? false;
 
@@ -477,6 +479,7 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
 export function LogSessionPage() {
   const navigate      = useNavigate();
   const upsertWorkout = useUpsertWorkout();
+  const deleteWorkout = useDeleteWorkout();
   const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
   // Exclude the current session from the "previous performance" lookup — once
@@ -568,8 +571,14 @@ export function LogSessionPage() {
     navigate('/', { replace: true });
   };
 
-  const discard = () => {
+  const discard = async () => {
     if (!confirm('Discard this workout?')) return;
+    // Cancel any pending auto-save timer so it doesn't fire after discard
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // Remove from Supabase if an auto-save already ran
+    if (saveStatus !== 'idle' && workout) {
+      try { await deleteWorkout.mutateAsync(workout.id); } catch { /* best-effort */ }
+    }
     setWorkout(null);
     navigate('/log', { replace: true });
   };
@@ -652,7 +661,7 @@ export function LogSessionPage() {
                           <ExerciseBlock
                             exercise={ex}
                             log={log}
-                            allWorkouts={pastWorkouts}
+                            previousWorkouts={pastWorkouts}
                             onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                             onAddSet={() => addSet(log.exerciseId)}
                             onRemoveSet={i => removeSet(log.exerciseId, i)}
@@ -672,7 +681,7 @@ export function LogSessionPage() {
                   <ExerciseBlock
                     exercise={ex}
                     log={log}
-                    allWorkouts={pastWorkouts}
+                    previousWorkouts={pastWorkouts}
                     onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                     onAddSet={() => addSet(log.exerciseId)}
                     onRemoveSet={i => removeSet(log.exerciseId, i)}

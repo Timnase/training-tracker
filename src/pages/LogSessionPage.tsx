@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useActiveWorkout } from '../hooks/useActiveWorkout';
-import { useUpsertWorkout } from '../hooks/useWorkouts';
+import { useUpsertWorkout, useDeleteWorkout } from '../hooks/useWorkouts';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { usePlan, useUpsertPlan } from '../hooks/usePlans';
 import { Header } from '../components/layout/Header';
@@ -447,18 +447,20 @@ function SetRow({ index, set, lastSet, onUpdate, onRemove, isUnilateral }: SetRo
 // ─── Exercise block ───────────────────────────────────────────────────────────
 
 interface ExerciseBlockProps {
-  exercise:    Exercise;
-  log:         ExerciseLog;
-  allWorkouts: { exercises: ExerciseLog[]; date: string }[];
-  onUpdateSet: (setIdx: number, patch: Partial<SetLog>) => void;
-  onAddSet:    () => void;
-  onRemoveSet: (setIdx: number) => void;
-  onNoteChange:(note: string) => void;
-  onEdit:      () => void;
+  exercise:          Exercise;
+  log:               ExerciseLog;
+  previousWorkouts:  { exercises: ExerciseLog[]; date: string }[];
+  onUpdateSet:       (setIdx: number, patch: Partial<SetLog>) => void;
+  onAddSet:          () => void;
+  onRemoveSet:       (setIdx: number) => void;
+  onNoteChange:      (note: string) => void;
+  onEdit:            () => void;
 }
 
-function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange, onEdit }: ExerciseBlockProps) {
-  const lastWo  = allWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
+function ExerciseBlock({ exercise, log, previousWorkouts, onUpdateSet, onAddSet, onRemoveSet, onNoteChange, onEdit }: ExerciseBlockProps) {
+  // Each exercise may have last been done in a different past workout, so we
+  // search all previous sessions (current session excluded by the caller).
+  const lastWo  = previousWorkouts.find(w => w.exercises.some(e => e.exerciseId === exercise.id));
   const lastLog = lastWo?.exercises.find(e => e.exerciseId === exercise.id) ?? null;
   const isUnilateral = log.isUnilateral ?? exercise.isUnilateral ?? false;
 
@@ -529,8 +531,13 @@ function ExerciseBlock({ exercise, log, allWorkouts, onUpdateSet, onAddSet, onRe
 export function LogSessionPage() {
   const navigate      = useNavigate();
   const upsertWorkout = useUpsertWorkout();
+  const deleteWorkout = useDeleteWorkout();
   const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
+  // Exclude the current session from the "previous performance" lookup — once
+  // the auto-save fires this workout appears in allWorkouts and would otherwise
+  // overwrite the previous-session hints with the in-progress (empty) data.
+  const pastWorkouts = allWorkouts.filter(w => w.id !== workout?.id);
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
   const timer   = useRestTimer();
@@ -543,21 +550,20 @@ export function LogSessionPage() {
   // Status: 'idle' → 'pending' (debounce running) → 'saving' → 'saved' | 'error'
   type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const saveTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Holds the in-flight upsert promise so discard() can await it and then
+  // delete the row if the save completed while discard was waiting.
+  const savePromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     if (!workout) return;
     setSaveStatus('pending');
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
+    saveTimerRef.current = setTimeout(() => {
       setSaveStatus('saving');
-      try {
-        await upsertWorkout.mutateAsync({ ...workout, date: workout.startedAt ?? new Date().toISOString() });
-        setSaveStatus('saved');
-      } catch {
-        setSaveStatus('error');
-      }
+      const p = upsertWorkout.mutateAsync({ ...workout, date: workout.startedAt ?? new Date().toISOString() });
+      savePromiseRef.current = p;
+      p.then(() => setSaveStatus('saved')).catch(() => setSaveStatus('error'));
     }, 15_000);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [workout]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -617,8 +623,21 @@ export function LogSessionPage() {
     navigate('/', { replace: true });
   };
 
-  const discard = () => {
+  const discard = async () => {
     if (!confirm('Discard this workout?')) return;
+    // Cancel any pending debounce timer so no new save can start
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    const workoutId = workout?.id;
+    if (saveStatus === 'saved' && workoutId) {
+      // Save already completed — delete the row
+      try { await deleteWorkout.mutateAsync(workoutId); } catch { /* best-effort */ }
+    } else if (saveStatus === 'saving' && savePromiseRef.current && workoutId) {
+      // Save is in-flight — wait for it to settle, then delete if it succeeded
+      try {
+        await savePromiseRef.current;
+        await deleteWorkout.mutateAsync(workoutId);
+      } catch { /* save failed, nothing to delete */ }
+    }
     setWorkout(null);
     navigate('/log', { replace: true });
   };
@@ -704,7 +723,7 @@ export function LogSessionPage() {
                           <ExerciseBlock
                             exercise={ex}
                             log={log}
-                            allWorkouts={allWorkouts}
+                            previousWorkouts={pastWorkouts}
                             onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                             onAddSet={() => addSet(log.exerciseId)}
                             onRemoveSet={i => removeSet(log.exerciseId, i)}
@@ -724,7 +743,7 @@ export function LogSessionPage() {
                   <ExerciseBlock
                     exercise={ex}
                     log={log}
-                    allWorkouts={allWorkouts}
+                    previousWorkouts={pastWorkouts}
                     onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                     onAddSet={() => addSet(log.exerciseId)}
                     onRemoveSet={i => removeSet(log.exerciseId, i)}

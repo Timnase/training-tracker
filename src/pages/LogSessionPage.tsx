@@ -479,6 +479,10 @@ export function LogSessionPage() {
   const upsertWorkout = useUpsertWorkout();
   const upsertPlan    = useUpsertPlan();
   const { data: allWorkouts = [] } = useWorkouts();
+  // Exclude the current session from the "previous performance" lookup — once
+  // the auto-save fires this workout appears in allWorkouts and would otherwise
+  // overwrite the previous-session hints with the in-progress (empty) data.
+  const pastWorkouts = allWorkouts.filter(w => w.id !== workout?.id);
   const { workout, setWorkout, updateSet, addSet, removeSet, updateExerciseNote, setFeeling, setCardio, setNotes, renameExercise } = useActiveWorkout();
   const elapsed = useElapsedTime(workout?.startedAt);
 
@@ -648,7 +652,7 @@ export function LogSessionPage() {
                           <ExerciseBlock
                             exercise={ex}
                             log={log}
-                            allWorkouts={allWorkouts}
+                            allWorkouts={pastWorkouts}
                             onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                             onAddSet={() => addSet(log.exerciseId)}
                             onRemoveSet={i => removeSet(log.exerciseId, i)}
@@ -668,7 +672,7 @@ export function LogSessionPage() {
                   <ExerciseBlock
                     exercise={ex}
                     log={log}
-                    allWorkouts={allWorkouts}
+                    allWorkouts={pastWorkouts}
                     onUpdateSet={(i, patch) => updateSet(log.exerciseId, i, patch)}
                     onAddSet={() => addSet(log.exerciseId)}
                     onRemoveSet={i => removeSet(log.exerciseId, i)}

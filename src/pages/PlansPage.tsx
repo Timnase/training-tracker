@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { usePlans, useUpsertPlan } from '../hooks/usePlans';
 import { useActivePlanId, useSetActivePlanId } from '../hooks/useSettings';
+import { supabase } from '../lib/supabase';
 import { Spinner } from '../components/ui/Spinner';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -9,6 +10,8 @@ import { Modal } from '../components/Modal';
 import { Header } from '../components/layout/Header';
 import { uid } from '../utils';
 import type { Plan, WorkoutTemplate } from '../types';
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
 // ─── Plan file parser ─────────────────────────────────────────────────────────
 //
@@ -132,13 +135,23 @@ export function PlansPage() {
   const [showModal, setShowModal] = useState(false);
   const [newName,   setNewName]   = useState('');
 
-  // ── Import modal ──
+  // ── Import modal (shared by all import paths) ──
   const importFileRef                         = useRef<HTMLInputElement>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [parsedPlan,      setParsedPlan]      = useState<ParsedPlan | null>(null);
   const [importName,      setImportName]      = useState('');
   const [importError,     setImportError]     = useState('');
   const [importSaved,     setImportSaved]     = useState(false);
+
+  // ── Paste text modal ──
+  const [showTextModal, setShowTextModal] = useState(false);
+  const [pastedText,    setPastedText]    = useState(EXAMPLE_PLAN_TEXT);
+  const [textError,     setTextError]     = useState('');
+
+  // ── Scan image ──
+  const imageFileRef                      = useRef<HTMLInputElement>(null);
+  const [imageScanning, setImageScanning] = useState(false);
+  const [imageError,    setImageError]    = useState('');
 
   // ── Format guide modal ──
   const [showFormatGuide, setShowFormatGuide] = useState(false);
@@ -161,7 +174,63 @@ export function PlansPage() {
     navigate(`/plans/${plan.id}`);
   };
 
-  // ── Import handlers ──
+  // ── Paste text handler ──
+  const confirmPastedText = () => {
+    if (!pastedText.trim()) { setTextError('Please enter some text first.'); return; }
+    const plan = parseTextPlan(pastedText);
+    const exerciseCount = plan.workouts.reduce((n, w) => n + w.exercises.length, 0);
+    if (exerciseCount === 0) {
+      setTextError('No exercises detected. Use the "Name NxReps" format, e.g. "Bench Press 4x8".');
+      return;
+    }
+    setParsedPlan(plan); setImportName(plan.name); setImportSaved(false);
+    setShowTextModal(false); setShowImportModal(true);
+  };
+
+  // ── Scan image handler ──
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+      setImageError('Unsupported image type. Please use JPG, PNG, GIF, or WebP.');
+      return;
+    }
+    setImageError('');
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const dataUrl = ev.target?.result as string;
+      const [meta, base64] = dataUrl.split(',');
+      const mimeType = meta.replace('data:', '').replace(';base64', '');
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+        setImageError('Unsupported image format. Please use JPG, PNG, GIF, or WebP.');
+        return;
+      }
+      setImageScanning(true);
+      try {
+        const { data, error } = await supabase.functions.invoke('scan-image', { body: { base64, mimeType } });
+        if (error) throw error;
+        const text: string = ((data as { text?: string })?.text ?? '').slice(0, 8000).trim();
+        if (!text || text === 'NO_PLAN_FOUND') {
+          setImageError('No workout plan detected. Try a clearer screenshot.');
+          return;
+        }
+        const plan = parseTextPlan(text);
+        if (!plan.workouts.length) {
+          setImageError('No workout plan detected. Try a clearer screenshot.');
+          return;
+        }
+        setParsedPlan(plan); setImportName(plan.name); setImportSaved(false); setShowImportModal(true);
+      } catch (err) {
+        setImageError(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      } finally {
+        setImageScanning(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // ── File import handlers ──
   const openImportPicker = () => { setImportError(''); importFileRef.current?.click(); };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -193,8 +262,9 @@ export function PlansPage() {
     <>
       <Header title="My Plans" />
 
-      {/* Hidden file input */}
+      {/* Hidden file inputs */}
       <input ref={importFileRef} type="file" accept=".txt,.json" className="hidden" onChange={handleFileChange} />
+      <input ref={imageFileRef}  type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={handleImageChange} />
 
       <div className="p-4 pb-2">
         {importError && (
@@ -242,12 +312,12 @@ export function PlansPage() {
       </div>
 
       {/* ── Sticky action bar ─────────────────────────────────────────────── */}
-      <div className="sticky bottom-0 bg-white border-t border-slate-100 px-4 py-3 grid grid-cols-2 gap-2.5">
+      <div className="sticky bottom-0 bg-white border-t border-slate-100 px-4 py-3 space-y-2.5">
 
-        {/* Create new plan */}
+        {/* Row 1: Create new (full width, primary) */}
         <button
           onClick={() => setShowModal(true)}
-          className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-primary-500 text-white shadow-sm active:scale-[0.97] transition-transform"
+          className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-primary-500 text-white shadow-sm active:scale-[0.97] transition-transform"
         >
           <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
@@ -260,13 +330,61 @@ export function PlansPage() {
           </div>
         </button>
 
-        {/* Load plan from file + ? badge */}
+        {/* Row 2: Paste text | Scan image */}
+        <div className="grid grid-cols-2 gap-2.5">
+
+          {/* Paste text */}
+          <button
+            onClick={() => { setTextError(''); setPastedText(EXAMPLE_PLAN_TEXT); setShowTextModal(true); }}
+            className="flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform"
+          >
+            <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+                <line x1="17" y1="10" x2="3" y2="10" />
+                <line x1="21" y1="6" x2="3" y2="6" />
+                <line x1="21" y1="14" x2="3" y2="14" />
+                <line x1="17" y1="18" x2="3" y2="18" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-bold leading-tight">Paste text</p>
+              <p className="text-[11px] text-primary-400 leading-tight mt-0.5">Type or paste</p>
+            </div>
+          </button>
+
+          {/* Scan image */}
+          <button
+            onClick={() => { setImageError(''); imageFileRef.current?.click(); }}
+            disabled={imageScanning}
+            className="flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform disabled:opacity-60 disabled:pointer-events-none"
+          >
+            <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
+              {imageScanning ? (
+                <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={2} strokeDasharray="60" strokeDashoffset="45" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <polyline points="21 15 16 10 5 21" />
+                </svg>
+              )}
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-bold leading-tight">{imageScanning ? 'Scanning…' : 'Scan image'}</p>
+              <p className="text-[11px] text-primary-400 leading-tight mt-0.5">AI reads photo</p>
+            </div>
+          </button>
+        </div>
+
+        {/* Row 3: Load from file + ? badge */}
         <div className="relative">
           <button
             onClick={openImportPicker}
-            className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border-2 border-primary-500 text-primary-600 active:scale-[0.97] transition-transform"
+            className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border border-slate-200 text-slate-500 active:scale-[0.97] transition-transform"
           >
-            <div className="w-9 h-9 rounded-full bg-primary-50 flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 rounded-full bg-slate-50 flex items-center justify-center flex-shrink-0">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
                 <polyline points="17 8 12 3 7 8" />
@@ -275,11 +393,9 @@ export function PlansPage() {
             </div>
             <div className="text-left">
               <p className="text-sm font-bold leading-tight">Load from file</p>
-              <p className="text-[11px] text-primary-400 leading-tight mt-0.5">.txt or .json</p>
+              <p className="text-[11px] text-slate-400 leading-tight mt-0.5">.txt or .json</p>
             </div>
           </button>
-
-          {/* ? format guide badge */}
           <button
             onClick={e => { e.stopPropagation(); setShowFormatGuide(true); }}
             title="Show file format guide"
@@ -288,6 +404,11 @@ export function PlansPage() {
             ?
           </button>
         </div>
+
+        {/* Image scan error */}
+        {imageError && (
+          <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-xl">{imageError}</p>
+        )}
       </div>
 
       {/* ── Create plan modal ── */}
@@ -342,6 +463,26 @@ export function PlansPage() {
             <Button fullWidth loading={upsertPlan.isPending} onClick={confirmImport}>
               {importSaved ? '✓ Saved!' : 'Load Plan'}
             </Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Paste text modal ── */}
+      {showTextModal && (
+        <Modal title="Paste Your Plan" onClose={() => setShowTextModal(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">
+              Edit the template below or paste your own plan, then tap <strong>Import</strong>.
+            </p>
+            <textarea
+              className="w-full h-56 text-sm font-mono p-3 rounded-xl border border-slate-200 bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary-400"
+              value={pastedText}
+              onChange={e => { setPastedText(e.target.value); setTextError(''); }}
+              spellCheck={false}
+              autoFocus
+            />
+            {textError && <p className="text-sm text-red-500">{textError}</p>}
+            <Button fullWidth onClick={confirmPastedText}>Import</Button>
           </div>
         </Modal>
       )}

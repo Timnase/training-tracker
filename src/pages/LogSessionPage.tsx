@@ -4,7 +4,6 @@ import { useActiveWorkout } from '../hooks/useActiveWorkout';
 import { useUpsertWorkout } from '../hooks/useWorkouts';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { usePlan, useUpsertPlan } from '../hooks/usePlans';
-import { Header } from '../components/layout/Header';
 import { Button } from '../components/ui/Button';
 import { Toggle } from '../components/ui/Toggle';
 import { Input, Textarea } from '../components/ui/Input';
@@ -38,74 +37,27 @@ function useElapsedTime(startedAt: string | null | undefined): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// ─── Rest timer sound ─────────────────────────────────────────────────────────
-// Generate a 3-beep WAV as a blob URL once at module load.
-// Using HTML <Audio> instead of Web Audio API: iOS blocks AudioContext nodes
-// created outside a user gesture even after resume(), but an <Audio> element
-// that was play()-ed (even silently) during a gesture can replay freely.
-
-function _makeBeepUrl(): string {
-  try {
-    const sr = 8000;
-    const notes: Array<[number, number, number]> = [
-      [0,    523.25, 0.20], // C5
-      [0.22, 659.25, 0.20], // E5
-      [0.44, 783.99, 0.35], // G5
-    ];
-    const totalSecs = 0.85;
-    const n = Math.ceil(sr * totalSecs);
-    const pcm = new Float32Array(n);
-    for (const [t0, freq, dur] of notes) {
-      const s0 = Math.floor(t0 * sr);
-      const sn = Math.floor(dur * sr);
-      for (let i = 0; i < sn && s0 + i < n; i++) {
-        const env = Math.min(i / (sr * 0.01), 1) * Math.min((sn - i) / (sr * 0.02), 1);
-        pcm[s0 + i] += 0.5 * Math.sin(2 * Math.PI * freq * i / sr) * env;
-      }
-    }
-    const samples = new Int16Array(n);
-    for (let i = 0; i < n; i++) samples[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
-    const dataLen = samples.byteLength;
-    const buf = new ArrayBuffer(44 + dataLen);
-    const dv  = new DataView(buf);
-    dv.setUint32( 0, 0x52494646, false); // "RIFF"
-    dv.setUint32( 4, 36 + dataLen, true);
-    dv.setUint32( 8, 0x57415645, false); // "WAVE"
-    dv.setUint32(12, 0x666d7420, false); // "fmt "
-    dv.setUint32(16, 16, true);
-    dv.setUint16(20, 1,  true);           // PCM
-    dv.setUint16(22, 1,  true);           // mono
-    dv.setUint32(24, sr, true);
-    dv.setUint32(28, sr * 2, true);       // byteRate
-    dv.setUint16(32, 2,  true);           // blockAlign
-    dv.setUint16(34, 16, true);           // bitsPerSample
-    dv.setUint32(36, 0x64617461, false);  // "data"
-    dv.setUint32(40, dataLen, true);
-    new Int16Array(buf, 44).set(samples);
-    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-  } catch { return ''; }
-}
-const BEEP_URL = _makeBeepUrl();
-
 // ─── Rest timer ───────────────────────────────────────────────────────────────
-// State and logic live in useRestTimer(). Two components consume it:
-//  • RestTimerBanner  — sticky bar at the top of the page while running
-//  • RestTimerControls — idle preset/custom picker, shown inline when stopped
+// No HTML Audio — any web-audio playback grabs the OS audio session and stops
+// background music (Spotify, etc.) permanently. Instead we rely on:
+//   • Vibration  for in-app haptic alert
+//   • SW notification  for the system sound (OS notification tone briefly
+//     ducks music then the OS resumes it automatically — no permanent cutoff)
 
 const PRESETS = [30, 60, 90, 120, 180];
 
 interface RestTimerHandle {
-  remaining:    number | null;
-  total:        number;
-  finished:     boolean;
-  selected:     number;
-  customMin:    string;
-  customSec:    string;
-  setCustomMin: (v: string) => void;
-  setCustomSec: (v: string) => void;
-  start:        (secs: number) => void;
-  stop:         () => void;
-  dismiss:      () => void;
+  remaining: number | null;
+  total:     number;
+  finished:  boolean;
+  selected:  number;
+  min:       string;
+  sec:       string;
+  setMin:    (v: string) => void;
+  setSec:    (v: string) => void;
+  start:     (secs: number) => void;
+  stop:      () => void;
+  dismiss:   () => void;
 }
 
 function useRestTimer(): RestTimerHandle {
@@ -114,38 +66,14 @@ function useRestTimer(): RestTimerHandle {
   const [remaining, setRemaining] = useState<number | null>(null);
   const [finished,  setFinished]  = useState(false);
   const [selected,  setSelected]  = useState(90);
-  const [customMin, setCustomMin] = useState('');
-  const [customSec, setCustomSec] = useState('');
+  const [min,       setMin]       = useState('');
+  const [sec,       setSec]       = useState('');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioRef    = useRef<HTMLAudioElement | null>(null);
 
   const calcRemaining = (end: number) => Math.max(0, Math.ceil((end - Date.now()) / 1000));
 
-  const playBeep = () => {
-    if ('vibrate' in navigator) navigator.vibrate([300, 100, 300]);
-    const a = audioRef.current;
-    if (!a) return;
-
-    // Request a transient audio session so the OS resumes background audio
-    // (Spotify, podcasts, etc.) as soon as the beep finishes.
-    // 'transient' = brief interruption, other apps auto-resume after.
-    // Supported on iOS 17+ and Chrome for Android; silently ignored elsewhere.
-    if ('audioSession' in navigator) {
-      try { (navigator as any).audioSession.type = 'transient'; } catch {}
-    }
-
-    // Set onended before play() so it is always registered.
-    // Clearing src then calling load() fully deactivates the media element —
-    // this signals the OS that the audio session is done and allows interrupted
-    // apps to resume. (src='' alone is insufficient on some iOS versions.)
-    a.onended = () => {
-      a.src = '';
-      a.load();
-      audioRef.current = null;
-    };
-    a.currentTime = 0;
-    a.volume = 1;
-    a.play().catch(() => {});
+  const fireAlert = () => {
+    if ('vibrate' in navigator) navigator.vibrate([400, 100, 400, 100, 400]);
   };
 
   const scheduleNotification = async (delayMs: number) => {
@@ -171,12 +99,6 @@ function useRestTimer(): RestTimerHandle {
   };
 
   const start = (secs: number) => {
-    // Create the audio element inside the gesture so browsers permit future play() calls.
-    // Do NOT call a.load() — that activates the iOS audio session immediately and
-    // interrupts background music in other apps during the countdown.
-    if (BEEP_URL && !audioRef.current) {
-      audioRef.current = new Audio(BEEP_URL);
-    }
     if (intervalRef.current) clearInterval(intervalRef.current);
     setSelected(secs); setFinished(false);
     const end = Date.now() + secs * 1000;
@@ -186,16 +108,18 @@ function useRestTimer(): RestTimerHandle {
       const r = calcRemaining(end);
       if (r <= 0) {
         clearInterval(intervalRef.current!); setEndTime(null); setRemaining(null);
-        cancelNotification(); playBeep();
+        cancelNotification(); setFinished(true); fireAlert();
       } else setRemaining(r);
     }, 250);
   };
 
+  // Re-sync on visibility: handles the case where the app was backgrounded
   useEffect(() => {
     const onVisible = () => {
       if (!document.hidden && endTime) {
         const r = calcRemaining(endTime);
-        if (r <= 0) { cancelNotification(); stop(); setFinished(true); playBeep(); } else setRemaining(r);
+        if (r <= 0) { cancelNotification(); stop(); setFinished(true); fireAlert(); }
+        else setRemaining(r);
       }
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -204,131 +128,139 @@ function useRestTimer(): RestTimerHandle {
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
-  return { remaining, total, finished, selected, customMin, customSec, setCustomMin, setCustomSec, start, stop, dismiss: () => setFinished(false) };
+  return { remaining, total, finished, selected, min, sec, setMin, setSec, start, stop, dismiss: () => setFinished(false) };
 }
 
-// ─── Sticky banner shown at the top of the page while the timer is active ─────
+// ─── Session top bar ──────────────────────────────────────────────────────────
+// Always sticky at the top of the page. Contains the workout title + elapsed
+// clock on the first row, and the rest timer (in all states) on the second row.
 
-function RestTimerBanner({ timer }: { timer: RestTimerHandle }) {
-  const { remaining, total, finished, start, stop, dismiss } = timer;
+type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
-  if (finished) {
-    return (
-      <div className="sticky top-0 z-40 bg-green-50 border-b-2 border-green-200 px-4 py-3 flex items-center gap-3">
-        <span className="text-xl">✅</span>
-        <div className="flex-1">
-          <p className="text-sm font-bold text-green-700">Rest done!</p>
-          <p className="text-xs text-green-600">Timer finished while you were away</p>
-        </div>
-        <button onClick={dismiss} className="text-xs font-bold text-green-600 px-2 py-1 rounded-lg hover:bg-green-100 active:bg-green-200">
-          Dismiss
-        </button>
-      </div>
-    );
-  }
-
-  if (remaining === null) return null;
-
-  const pct    = (remaining / total) * 100;
-  const urgent = remaining <= 10;
-
-  return (
-    <div className={`sticky top-0 z-40 border-b-2 px-4 py-3 flex items-center gap-3 ${
-      urgent ? 'bg-red-50 border-red-300' : 'bg-indigo-50 border-indigo-200'
-    }`}>
-      {/* Circular progress ring */}
-      <div className="relative w-11 h-11 flex-shrink-0">
-        <svg className="w-11 h-11 -rotate-90" viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="15" fill="none" stroke={urgent ? '#fecaca' : '#c7d2fe'} strokeWidth="3" />
-          <circle cx="18" cy="18" r="15" fill="none"
-            stroke={urgent ? '#ef4444' : '#6366f1'} strokeWidth="3"
-            strokeDasharray={`${2 * Math.PI * 15}`}
-            strokeDashoffset={`${2 * Math.PI * 15 * (1 - pct / 100)}`}
-            strokeLinecap="round"
-          />
-        </svg>
-        <span className={`absolute inset-0 flex items-center justify-center text-xs font-bold ${urgent ? 'text-red-500' : 'text-indigo-600'}`}>
-          {remaining}
-        </span>
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm font-bold ${urgent ? 'text-red-600' : 'text-indigo-700'}`}>
-          {urgent ? 'Almost done!' : 'Resting…'}
-        </p>
-        <p className={`text-xs ${urgent ? 'text-red-400' : 'text-indigo-400'}`}>{remaining}s left</p>
-      </div>
-
-      <div className="flex gap-2 flex-shrink-0">
-        <button
-          onClick={() => start(total)}
-          className="text-xs font-semibold text-slate-500 hover:text-slate-700 px-2 py-1 rounded-lg"
-        >
-          Reset
-        </button>
-        <button
-          onClick={stop}
-          className={`text-xs font-bold px-3 py-1.5 rounded-lg ${
-            urgent ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-indigo-500 text-white hover:bg-indigo-600'
-          }`}
-        >
-          Skip
-        </button>
-      </div>
-    </div>
-  );
+interface SessionTopBarProps {
+  workoutName: string;
+  elapsed:     string;
+  saveStatus:  SaveStatus;
+  timer:       RestTimerHandle;
+  onBack:      () => void;
 }
 
-// ─── Idle preset / custom picker — shown inline when timer is not running ──────
-
-function RestTimerControls({ timer }: { timer: RestTimerHandle }) {
-  const { selected, customMin, customSec, start, setCustomMin, setCustomSec } = timer;
-  const customTotal = (parseInt(customMin) || 0) * 60 + (parseInt(customSec) || 0);
+function SessionTopBar({ workoutName, elapsed, saveStatus, timer, onBack }: SessionTopBarProps) {
+  const { remaining, total, finished, selected, min, sec, start, stop, dismiss, setMin, setSec } = timer;
+  const customTotal = (parseInt(min) || 0) * 60 + (parseInt(sec) || 0);
   const hasCustom   = customTotal > 0;
+  const urgent      = remaining !== null && remaining <= 10;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
-      <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 text-center">Rest Timer — tap to start</p>
-      <div className="flex gap-1.5">
-        {PRESETS.map(p => (
-          <button
-            key={p}
-            onClick={() => { setCustomMin(''); setCustomSec(''); start(p); }}
-            className={`flex-1 py-2 rounded-lg text-xs font-bold border-2 transition-all active:scale-95
-              ${selected === p && !hasCustom
-                ? 'border-primary-500 bg-primary-50 text-primary-600'
-                : 'border-slate-200 text-slate-500 hover:border-primary-300'}`}
-          >
-            {p >= 60 ? `${p / 60}m` : `${p}s`}
-          </button>
-        ))}
-      </div>
-      <div className="flex gap-2 items-center">
-        <div className="flex-1 flex gap-1 items-center">
-          <input
-            type="number" inputMode="numeric" min="0" max="59" placeholder="0"
-            value={customMin}
-            onChange={e => setCustomMin(e.target.value)}
-            className="w-full px-2 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
-          />
-          <span className="text-xs text-slate-400 font-semibold flex-shrink-0">min</span>
-          <input
-            type="number" inputMode="numeric" min="0" max="59" placeholder="0"
-            value={customSec}
-            onChange={e => setCustomSec(e.target.value)}
-            className="w-full px-2 py-1.5 border border-slate-200 rounded-xl text-sm text-center focus:outline-none focus:border-primary-500"
-          />
-          <span className="text-xs text-slate-400 font-semibold flex-shrink-0">sec</span>
+    <div className="sticky top-0 z-50 bg-white shadow-sm">
+
+      {/* ── Row 1: navigation + workout title + elapsed + save status ── */}
+      <div className="h-[52px] flex items-center gap-2 px-3 border-b border-slate-100">
+        <button
+          onClick={onBack}
+          className="w-9 h-9 flex-shrink-0 flex items-center justify-center text-slate-500 rounded-xl"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span className="flex-1 text-[16px] font-bold text-slate-900 truncate">{workoutName}</span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {saveStatus === 'pending' && <span className="text-[10px] text-slate-400">● unsaved</span>}
+          {saveStatus === 'saving'  && <span className="text-[10px] text-primary-400 animate-pulse">↑ saving…</span>}
+          {saveStatus === 'saved'   && <span className="text-[10px] text-green-500">☁ saved</span>}
+          {saveStatus === 'error'   && <span className="text-[10px] text-red-400">⚠ save failed</span>}
+          <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
         </div>
-        {hasCustom && (
-          <button
-            onClick={() => start(customTotal)}
-            className="px-3 py-1.5 rounded-xl bg-primary-500 text-white text-sm font-bold flex-shrink-0"
-          >
-            ▶ {customMin ? `${customMin}m` : ''}{customSec ? `${customSec}s` : ''}
-          </button>
-        )}
       </div>
+
+      {/* ── Row 2: rest timer ── */}
+      {finished ? (
+        /* Finished */
+        <div className="px-4 py-2.5 flex items-center gap-3 bg-green-50 border-b-2 border-green-200">
+          <span className="text-lg">✅</span>
+          <p className="flex-1 text-sm font-bold text-green-700">Rest done!</p>
+          <button onClick={dismiss} className="text-xs font-bold text-green-600 px-3 py-1 rounded-lg bg-green-100 active:bg-green-200">
+            Dismiss
+          </button>
+        </div>
+      ) : remaining !== null ? (
+        /* Running */
+        <div className={`px-4 py-2.5 flex items-center gap-3 border-b-2 ${urgent ? 'bg-red-50 border-red-300' : 'bg-indigo-50 border-indigo-200'}`}>
+          <div className="relative w-10 h-10 flex-shrink-0">
+            <svg className="w-10 h-10 -rotate-90" viewBox="0 0 36 36">
+              <circle cx="18" cy="18" r="15" fill="none" stroke={urgent ? '#fecaca' : '#c7d2fe'} strokeWidth="3" />
+              <circle cx="18" cy="18" r="15" fill="none"
+                stroke={urgent ? '#ef4444' : '#6366f1'} strokeWidth="3"
+                strokeDasharray={`${2 * Math.PI * 15}`}
+                strokeDashoffset={`${2 * Math.PI * 15 * (1 - remaining / total)}`}
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className={`absolute inset-0 flex items-center justify-center text-[11px] font-bold ${urgent ? 'text-red-500' : 'text-indigo-600'}`}>
+              {remaining}
+            </span>
+          </div>
+          <div className="flex-1">
+            <p className={`text-sm font-bold ${urgent ? 'text-red-600' : 'text-indigo-700'}`}>
+              {urgent ? 'Almost done!' : 'Resting…'}
+            </p>
+            <p className={`text-xs ${urgent ? 'text-red-400' : 'text-indigo-400'}`}>{remaining}s left</p>
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button onClick={() => start(total)} className="text-xs font-semibold text-slate-500 px-2 py-1 rounded-lg hover:bg-white/60">Reset</button>
+            <button onClick={stop} className={`text-xs font-bold px-3 py-1.5 rounded-lg text-white ${urgent ? 'bg-red-500' : 'bg-indigo-500'}`}>Skip</button>
+          </div>
+        </div>
+      ) : (
+        /* Idle */
+        <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 space-y-2">
+          {/* Preset buttons */}
+          <div className="flex gap-1.5">
+            {PRESETS.map(p => (
+              <button
+                key={p}
+                onClick={() => { setMin(''); setSec(''); start(p); }}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold border-2 transition-all active:scale-95 ${
+                  selected === p && !hasCustom
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-600'
+                    : 'border-slate-200 bg-white text-slate-500'}`}
+              >
+                {p >= 60 ? `${p / 60}m` : `${p}s`}
+              </button>
+            ))}
+          </div>
+          {/* Custom min / sec inputs */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 flex-1">
+              <input
+                type="number" inputMode="numeric" min="0" max="99" placeholder="0"
+                value={min}
+                onChange={e => setMin(e.target.value)}
+                className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm font-semibold text-center bg-white focus:outline-none focus:border-indigo-400"
+              />
+              <span className="text-xs text-slate-400 font-semibold">min</span>
+            </div>
+            <div className="flex items-center gap-1 flex-1">
+              <input
+                type="number" inputMode="numeric" min="0" max="59" placeholder="0"
+                value={sec}
+                onChange={e => setSec(e.target.value)}
+                className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm font-semibold text-center bg-white focus:outline-none focus:border-indigo-400"
+              />
+              <span className="text-xs text-slate-400 font-semibold">sec</span>
+            </div>
+            {hasCustom && (
+              <button
+                onClick={() => start(customTotal)}
+                className="px-4 py-1.5 rounded-lg bg-indigo-500 text-white text-sm font-bold flex-shrink-0"
+              >
+                ▶
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -539,9 +471,6 @@ export function LogSessionPage() {
   const [editingExId, setEditingExId] = useState<string | null>(null);
   const [editName,    setEditName]    = useState('');
 
-  // Cloud auto-save: debounce 15 s after last change, then upsert to Supabase.
-  // Status: 'idle' → 'pending' (debounce running) → 'saving' → 'saved' | 'error'
-  type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -625,34 +554,17 @@ export function LogSessionPage() {
 
   return (
     <>
-      <Header title={workout.workoutTemplateName} showBack />
-
-      {/* Sticky timer banner — fixed at the top of the page while the timer is active */}
-      <RestTimerBanner timer={timer} />
+      <SessionTopBar
+        workoutName={workout.workoutTemplateName}
+        elapsed={elapsed}
+        saveStatus={saveStatus}
+        timer={timer}
+        onBack={() => navigate(-1)}
+      />
 
       <div className="p-4 space-y-5 pb-8">
-        {/* Plan name + elapsed timer + cloud save indicator */}
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
-          <div className="flex items-center gap-3">
-            {saveStatus === 'pending' && (
-              <span className="text-[10px] text-slate-400">● unsaved</span>
-            )}
-            {saveStatus === 'saving' && (
-              <span className="text-[10px] text-primary-400 animate-pulse">↑ saving…</span>
-            )}
-            {saveStatus === 'saved' && (
-              <span className="text-[10px] text-green-500">☁ saved</span>
-            )}
-            {saveStatus === 'error' && (
-              <span className="text-[10px] text-red-400" title="Auto-save failed">⚠ save failed</span>
-            )}
-            <span className="text-sm font-bold text-primary-500 tabular-nums">⏱ {elapsed}</span>
-          </div>
-        </div>
-
-        {/* Rest timer controls — only shown when idle; banner covers the running state */}
-        {!timer.remaining && !timer.finished && <RestTimerControls timer={timer} />}
+        {/* Plan name */}
+        <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">{workout.planName}</p>
 
         {/* Feeling */}
         <section>
